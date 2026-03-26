@@ -4,6 +4,7 @@ import json
 import datetime
 import uuid
 import shutil
+import hashlib # 🟢 NEW: Used for securing and hashing IP addresses
 from dotenv import load_dotenv
 
 # Import LangChain components for Google/Gemini
@@ -17,13 +18,34 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 load_dotenv()
 api_key = os.getenv("GEMINI_API_KEY") 
 
-st.set_page_config(page_title="DebateLM", page_icon="🏛️", layout="wide")
+st.set_page_config(page_title="AI Multi-Agent Debate", page_icon="🏛️", layout="wide")
 
 # ==========================================
-# 🟢 1. MULTI-USER ISOLATION
+# 🟢 1. STRICT MULTI-USER ISOLATION & QUOTA LOCK
 # ==========================================
+def get_permanent_user_id():
+    """Creates a permanent ID based on the user's IP Address to prevent quota bypass via refreshing."""
+    try:
+        # Get IP Address (Works perfectly on Streamlit Cloud)
+        ip = st.context.headers.get("X-Forwarded-For")
+        if ip:
+            real_ip = ip.split(",")[0].strip()
+            # We hash the IP for privacy so we don't store raw IPs (GDPR Best Practice)
+            return hashlib.md5(real_ip.encode()).hexdigest()
+    except Exception:
+        pass
+        
+    # Fallback for local testing on your computer (Uses URL Parameters)
+    if "uid" in st.query_params:
+        return st.query_params["uid"]
+        
+    new_id = str(uuid.uuid4())
+    st.query_params["uid"] = new_id
+    return new_id
+
+# Assign the permanent ID
 if "session_id" not in st.session_state:
-    st.session_state.session_id = str(uuid.uuid4())
+    st.session_state.session_id = get_permanent_user_id()
 
 USER_DIR = os.path.join("user_data", st.session_state.session_id)
 os.makedirs(USER_DIR, exist_ok=True)
@@ -33,7 +55,9 @@ HISTORY_FILE = os.path.join(USER_DIR, "debate_history_db.json")
 PERSIST_DIR = os.path.join(USER_DIR, "chroma_db") 
 TEMP_DOCS_DIR = os.path.join(USER_DIR, "temp_docs")
 
+# ==========================================
 # 🟢 2. THE EXCLUSIVE GEMINI 3.x MODELS
+# ==========================================
 AVAILABLE_MODELS =[
     "gemini-3.1-pro-preview",
     "gemini-3-flash-preview",
@@ -172,7 +196,7 @@ def process_documents(uploaded_files, is_append=False):
 # ==========================================
 st.markdown("""
     <div style='text-align: center; padding: 20px;'>
-        <h1 style='color: #2e6c80;'>🏛️ DebateLM</h1>
+        <h1 style='color: #2e6c80;'>🏛️ The AI Debate Arena</h1>
         <p style='font-size: 18px; color: gray;'>Upload knowledge, define AI personas, and watch them debate complex topics to find the truth.</p>
     </div>
     <hr>
@@ -185,7 +209,7 @@ with st.sidebar:
     # 🟢 Max 5 Agents, Max 5 Rounds
     num_agents = st.slider("Number of Agents", 2, 5, 2, help="Choose up to 5 distinct AI agents.")
     num_rounds = st.number_input("Number of Rounds", 1, 5, 2, help="Maximum 5 rounds per debate.")
-    global_judge_model = st.selectbox("Judge & Researcher Model", AVAILABLE_MODELS, index=1)
+    global_judge_model = st.selectbox("Judge & Researcher Model", AVAILABLE_MODELS, index=0)
 
     # 🟢 QUOTA COUNTER
     st.divider()
@@ -292,7 +316,7 @@ if st.session_state.current_view == "new":
                 
                 # Step 2: Finalize Personas
                 st.write("🎭 Finalizing Agent Personas...")
-                active_agents = []
+                active_agents =[]
                 for i, agent in enumerate(agents_config):
                     if agent["mode"] == "AI Generated":
                         instr = get_ai_persona(topic, i, agent["model"])
@@ -418,7 +442,6 @@ elif st.session_state.current_view == "history":
         with st.chat_message("user"):
             st.write(user_question)
             
-        # 🟢 Post-chat now uses the exact same model that was used to judge the debate!
         chat_model = past_data.get("judge_model", AVAILABLE_MODELS[1])
         llm = ChatGoogleGenerativeAI(model=chat_model, google_api_key=api_key)
         
