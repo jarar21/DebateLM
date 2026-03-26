@@ -18,7 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 load_dotenv()
 api_key = os.getenv("GEMINI_API_KEY") 
 
-st.set_page_config(page_title="AI Multi-Agent Debate", page_icon="🏛️", layout="wide")
+st.set_page_config(page_title="DebateLM", page_icon="🏛️", layout="wide")
 
 # ==========================================
 # 🟢 1. STRICT MULTI-USER ISOLATION & QUOTA LOCK
@@ -196,7 +196,7 @@ def process_documents(uploaded_files, is_append=False):
 # ==========================================
 st.markdown("""
     <div style='text-align: center; padding: 20px;'>
-        <h1 style='color: #2e6c80;'>🏛️ The AI Debate Arena</h1>
+        <h1 style='color: #2e6c80;'>🏛️ DebateLM</h1>
         <p style='font-size: 18px; color: gray;'>Upload knowledge, define AI personas, and watch them debate complex topics to find the truth.</p>
     </div>
     <hr>
