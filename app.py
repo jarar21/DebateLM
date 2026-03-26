@@ -185,7 +185,7 @@ with st.sidebar:
     # 🟢 Max 5 Agents, Max 5 Rounds
     num_agents = st.slider("Number of Agents", 2, 5, 2, help="Choose up to 5 distinct AI agents.")
     num_rounds = st.number_input("Number of Rounds", 1, 5, 2, help="Maximum 5 rounds per debate.")
-    global_judge_model = st.selectbox("Judge & Researcher Model", AVAILABLE_MODELS, index=0)
+    global_judge_model = st.selectbox("Judge & Researcher Model", AVAILABLE_MODELS, index=1)
 
     # 🟢 QUOTA COUNTER
     st.divider()
