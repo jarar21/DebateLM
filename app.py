@@ -30,7 +30,7 @@ from langchain_chroma import Chroma
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_core.documents import Document
 from langchain_community.retrievers import BM25Retriever
-from langchain_community.retrievers import EnsembleRetriever
+from langchain.retrievers import EnsembleRetriever
 import requests
 
 load_dotenv()
