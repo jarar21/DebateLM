@@ -1,478 +1,1011 @@
 import streamlit as st
-import os
-import json
-import datetime
-import uuid
-import shutil
-import hashlib # 🟢 NEW: Used for securing and hashing IP addresses
+import os, json, datetime, uuid, hashlib, shutil, time, re
+from typing import Optional
 from dotenv import load_dotenv
 
-# Import LangChain components for Google/Gemini
+# ── LangChain core ──────────────────────────────────────────────────────────
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.documents import Document
 
-# Load environment variables (API Key)
+# ── Hybrid Search ─────────────────────────────────────────────────────────
+from langchain_community.retrievers import BM25Retriever
+from langchain.retrievers import EnsembleRetriever
+
+# ── Re-Ranking ────────────────────────────────────────────────────────────
+from langchain.retrievers.document_compressors import CrossEncoderReranker
+from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+from langchain.retrievers import ContextualCompressionRetriever
+
+# ── Web search (Serper) ───────────────────────────────────────────────────
+import requests
+
 load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY") 
 
-st.set_page_config(page_title="DebateLM", page_icon="🏛️", layout="wide")
+# ═══════════════════════════════════════════════════════════════════════════
+# CONFIG
+# ═══════════════════════════════════════════════════════════════════════════
+GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
+SERPER_API_KEY  = os.getenv("SERPER_API_KEY", "")
 
-# ==========================================
-# 🟢 1. STRICT MULTI-USER ISOLATION & QUOTA LOCK
-# ==========================================
-def get_permanent_user_id():
-    """Creates a permanent ID based on the user's IP Address to prevent quota bypass via refreshing."""
-    try:
-        # Get IP Address (Works perfectly on Streamlit Cloud)
-        ip = st.context.headers.get("X-Forwarded-For")
-        if ip:
-            real_ip = ip.split(",")[0].strip()
-            # We hash the IP for privacy so we don't store raw IPs (GDPR Best Practice)
-            return hashlib.md5(real_ip.encode()).hexdigest()
-    except Exception:
-        pass
-        
-    # Fallback for local testing on your computer (Uses URL Parameters)
-    if "uid" in st.query_params:
-        return st.query_params["uid"]
-        
-    new_id = str(uuid.uuid4())
-    st.query_params["uid"] = new_id
-    return new_id
-
-# Assign the permanent ID
-if "session_id" not in st.session_state:
-    st.session_state.session_id = get_permanent_user_id()
-
-USER_DIR = os.path.join("user_data", st.session_state.session_id)
-os.makedirs(USER_DIR, exist_ok=True)
-
-AUTOSAVE_FILE = os.path.join(USER_DIR, "autosave.json")
-HISTORY_FILE = os.path.join(USER_DIR, "debate_history_db.json")
-PERSIST_DIR = os.path.join(USER_DIR, "chroma_db") 
-TEMP_DOCS_DIR = os.path.join(USER_DIR, "temp_docs")
-
-# ==========================================
-# 🟢 2. THE EXCLUSIVE GEMINI 3.x MODELS
-# ==========================================
 AVAILABLE_MODELS =[
     "gemini-3.1-pro-preview",
     "gemini-3-flash-preview",
     "gemini-3.1-flash-lite-preview"
 ]
+DEFAULT_MODEL = AVAILABLE_MODELS[0]
+MAX_DEBATES   = 50   # per-user cap
 
-MAX_DEBATES = 7 # Protection Cap
+# ── Chunking constants (Parent-Child) ────────────────────────────────────
+PARENT_CHUNK_SIZE  = 2000   # stored in docstore for LLM context
+PARENT_CHUNK_OVERLAP = 200
+CHILD_CHUNK_SIZE   = 400    # indexed in vectorstore for retrieval
+CHILD_CHUNK_OVERLAP = 50
+TOP_K_RETRIEVAL    = 20     # candidates before re-rank
+TOP_K_FINAL        = 8      # after re-rank
 
-# ==========================================
-# 🟢 3. DATABASE & HISTORY FUNCTIONS
-# ==========================================
+# ═══════════════════════════════════════════════════════════════════════════
+# PAGE CONFIG  — dark, judicial theme
+# ═══════════════════════════════════════════════════════════════════════════
+st.set_page_config(
+    page_title="DebateLM",
+    page_icon="⚖️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:wght@300;400;500&family=DM+Mono:wght@400&display=swap');
+
+/* ── Base ── */
+html, body, [class*="css"] {
+    font-family: 'DM Sans', sans-serif;
+    background-color: #0d0f14;
+    color: #e8e2d5;
+}
+.stApp { background: #0d0f14; }
+
+/* ── Hero ── */
+.hero-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 3.8rem;
+    font-weight: 900;
+    background: linear-gradient(135deg, #c9a96e 0%, #f0d9a8 50%, #c9a96e 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-align: center;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+}
+.hero-sub {
+    text-align: center;
+    color: #7a7060;
+    font-size: 1.05rem;
+    font-weight: 300;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-top: 0.3rem;
+}
+.hero-divider {
+    border: none;
+    border-top: 1px solid #2a2820;
+    margin: 1.5rem 0 2rem 0;
+}
+
+/* ── Agent cards ── */
+.agent-card {
+    border: 1px solid #2a2820;
+    border-radius: 12px;
+    padding: 1rem 1.2rem;
+    background: linear-gradient(145deg, #13151c, #1a1c24);
+    margin-bottom: 0.6rem;
+}
+
+/* ── Debate bubble ── */
+.debate-bubble {
+    border-left: 3px solid #c9a96e;
+    background: #13151c;
+    border-radius: 0 10px 10px 0;
+    padding: 1rem 1.2rem;
+    margin: 0.8rem 0;
+    font-size: 0.95rem;
+    line-height: 1.7;
+}
+.debate-bubble.judge {
+    border-left-color: #5ba4a4;
+    background: #0f1a1a;
+}
+.debate-bubble .speaker-tag {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.72rem;
+    color: #c9a96e;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    margin-bottom: 0.4rem;
+}
+.debate-bubble.judge .speaker-tag { color: #5ba4a4; }
+
+/* ── Round badge ── */
+.round-badge {
+    text-align: center;
+    font-family: 'Playfair Display', serif;
+    font-size: 1rem;
+    color: #4a4540;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    margin: 1.5rem 0 0.5rem 0;
+    border-top: 1px solid #2a2820;
+    border-bottom: 1px solid #2a2820;
+    padding: 0.4rem 0;
+}
+
+/* ── Sidebar ── */
+section[data-testid="stSidebar"] {
+    background: #0a0c10 !important;
+    border-right: 1px solid #1e2028;
+}
+section[data-testid="stSidebar"] .stButton > button {
+    background: #1a1c24;
+    border: 1px solid #2e2c28;
+    color: #c9a96e;
+    border-radius: 8px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.82rem;
+    letter-spacing: 0.05em;
+    transition: all 0.2s;
+}
+section[data-testid="stSidebar"] .stButton > button:hover {
+    background: #c9a96e;
+    color: #0d0f14;
+    border-color: #c9a96e;
+}
+
+/* ── Primary button ── */
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #c9a96e, #a07840);
+    border: none;
+    color: #0d0f14;
+    font-weight: 500;
+    border-radius: 8px;
+    font-family: 'DM Sans', sans-serif;
+    letter-spacing: 0.05em;
+    padding: 0.6rem 2rem;
+    transition: opacity 0.2s;
+}
+.stButton > button[kind="primary"]:hover { opacity: 0.85; }
+
+/* ── Evidence pills ── */
+.evidence-pill {
+    display: inline-block;
+    background: #1a2a1a;
+    border: 1px solid #2a4a2a;
+    color: #6abf6a;
+    border-radius: 20px;
+    padding: 0.15rem 0.7rem;
+    font-size: 0.75rem;
+    font-family: 'DM Mono', monospace;
+    margin: 0.1rem 0.2rem;
+}
+.evidence-pill.web {
+    background: #1a1a2a;
+    border-color: #3a3a6a;
+    color: #8888ff;
+}
+
+/* ── Source box ── */
+.source-box {
+    background: #0f1115;
+    border: 1px solid #1e2028;
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    font-size: 0.82rem;
+    font-family: 'DM Mono', monospace;
+    color: #7a7a8a;
+    margin-top: 0.5rem;
+    line-height: 1.6;
+}
+
+/* ── Status strip ── */
+.status-strip {
+    background: #0f1115;
+    border: 1px solid #1e2028;
+    border-radius: 8px;
+    padding: 0.6rem 1rem;
+    font-size: 0.82rem;
+    color: #c9a96e;
+    margin: 0.4rem 0;
+    font-family: 'DM Mono', monospace;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# USER ISOLATION
+# ═══════════════════════════════════════════════════════════════════════════
+def get_user_id() -> str:
+    try:
+        ip = st.context.headers.get("X-Forwarded-For", "")
+        if ip:
+            return hashlib.sha256(ip.split(",")[0].strip().encode()).hexdigest()[:32]
+    except Exception:
+        pass
+    if "uid" in st.query_params:
+        return st.query_params["uid"]
+    uid = str(uuid.uuid4()).replace("-", "")[:32]
+    st.query_params["uid"] = uid
+    return uid
+
+if "session_id" not in st.session_state:
+    st.session_state.session_id = get_user_id()
+
+USER_DIR      = os.path.join("user_data", st.session_state.session_id)
+AUTOSAVE_FILE = os.path.join(USER_DIR, "autosave.json")
+HISTORY_FILE  = os.path.join(USER_DIR, "debate_history_db.json")
+PERSIST_DIR   = os.path.join(USER_DIR, "chroma_db")
+DOCSTORE_FILE = os.path.join(USER_DIR, "docstore.json")
+TEMP_DIR      = os.path.join(USER_DIR, "temp_docs")
+os.makedirs(USER_DIR, exist_ok=True)
+os.makedirs(TEMP_DIR, exist_ok=True)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PERSISTENCE HELPERS
+# ═══════════════════════════════════════════════════════════════════════════
 def auto_save():
-    data = {}
-    if "debate_topic" in st.session_state:
-        data["debate_topic"] = st.session_state["debate_topic"]
-    for i in range(5): # Max 5 agents
-        if f"inst_{i}" in st.session_state:
-            data[f"inst_{i}"] = st.session_state[f"inst_{i}"]
+    data = {k: st.session_state[k] for k in st.session_state
+            if k.startswith("inst_") or k == "debate_topic"}
     with open(AUTOSAVE_FILE, "w") as f:
         json.dump(data, f)
 
 def load_past_debates():
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r") as f:
-            records = json.load(f)
-            for i, record in enumerate(records):
-                if "id" not in record:
-                    record["id"] = f"legacy_{i}_{datetime.datetime.now().timestamp()}"
-                if "research_brief" not in record:
-                    record["research_brief"] = "Legacy Record"
-                if "post_chat" not in record:
-                    record["post_chat"] =[]
-                if "judge_model" not in record:
-                    record["judge_model"] = AVAILABLE_MODELS[1]
-            return records
-    return[]
+    if not os.path.exists(HISTORY_FILE):
+        return []
+    with open(HISTORY_FILE, "r") as f:
+        records = json.load(f)
+    for i, r in enumerate(records):
+        r.setdefault("id", f"legacy_{i}")
+        r.setdefault("research_brief", "")
+        r.setdefault("web_evidence", [])
+        r.setdefault("post_chat", [])
+        r.setdefault("judge_model", DEFAULT_MODEL)
+    return records
 
-def save_new_debate(topic, history, verdict, research_brief, judge_model):
-    new_record = {
-        "id": str(datetime.datetime.now().timestamp()),
-        "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "topic": topic,
+def save_new_debate(topic, history, verdict, research_brief, web_evidence, judge_model):
+    record = {
+        "id":             str(datetime.datetime.now().timestamp()),
+        "date":           datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "topic":          topic,
         "research_brief": research_brief,
-        "history": history,
-        "verdict": verdict,
-        "post_chat":[],
-        "judge_model": judge_model
+        "web_evidence":   web_evidence,
+        "history":        history,
+        "verdict":        verdict,
+        "post_chat":      [],
+        "judge_model":    judge_model,
     }
-    st.session_state.past_debates.insert(0, new_record)
+    st.session_state.past_debates.insert(0, record)
     with open(HISTORY_FILE, "w") as f:
-        json.dump(st.session_state.past_debates, f)
-    return new_record
+        json.dump(st.session_state.past_debates, f, indent=2)
+    return record
 
-# Initialize Session States
+# ── Docstore (parent chunks) ────────────────────────────────────────────
+def load_docstore() -> dict:
+    if os.path.exists(DOCSTORE_FILE):
+        with open(DOCSTORE_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_docstore(ds: dict):
+    with open(DOCSTORE_FILE, "w") as f:
+        json.dump(ds, f)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# INIT SESSION STATE
+# ═══════════════════════════════════════════════════════════════════════════
 if "loaded_autosave" not in st.session_state:
     if os.path.exists(AUTOSAVE_FILE):
         with open(AUTOSAVE_FILE, "r") as f:
-            saved_data = json.load(f)
-            for key, value in saved_data.items():
-                st.session_state[key] = value
-    st.session_state["loaded_autosave"] = True
+            for k, v in json.load(f).items():
+                st.session_state[k] = v
+    st.session_state.loaded_autosave = True
 
-if "past_debates" not in st.session_state:
+if "past_debates"  not in st.session_state:
     st.session_state.past_debates = load_past_debates()
+if "current_view"  not in st.session_state:
+    st.session_state.current_view = "new"
+if "selected_history" not in st.session_state:
+    st.session_state.selected_history = None
+if "docstore" not in st.session_state:
+    st.session_state.docstore = load_docstore()
 
-if "current_view" not in st.session_state:
-    st.session_state.current_view = "new" 
-
+# ── Re-load vectorstore if it already exists on disk ────────────────────
 if "vectorstore" not in st.session_state:
-    if os.path.exists(PERSIST_DIR) and os.listdir(PERSIST_DIR):
-        st.session_state.vectorstore = Chroma(
-            persist_directory=PERSIST_DIR,
-            embedding_function=GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001", google_api_key=api_key)
-        )
+    if GEMINI_API_KEY and os.path.exists(PERSIST_DIR) and os.listdir(PERSIST_DIR):
+        try:
+            emb = GoogleGenerativeAIEmbeddings(
+                model="models/text-embedding-004",
+                google_api_key=GEMINI_API_KEY,
+            )
+            st.session_state.vectorstore = Chroma(
+                persist_directory=PERSIST_DIR,
+                embedding_function=emb,
+            )
+        except Exception:
+            st.session_state.vectorstore = None
     else:
         st.session_state.vectorstore = None
 
-# ==========================================
-# 🟢 4. AI & RAG LOGIC
-# ==========================================
-def parse_gemini_response(response):
-    content = response.content
-    if isinstance(content, list):
-        return "\n".join([block.get("text", "") for block in content if isinstance(block, dict) and "text" in block])
-    return str(content)
+if "bm25_retriever" not in st.session_state:
+    st.session_state.bm25_retriever = None
 
-def get_ai_persona(topic, agent_index, model_name):
-    llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key)
-    prompt = f"The debate topic is: '{topic}'. Create a short (1 sentence) system instruction for 'Agent {agent_index+1}'. Give them a unique professional background and a specific bias."
-    response = llm.invoke(prompt)
-    return parse_gemini_response(response)
+# ═══════════════════════════════════════════════════════════════════════════
+# ── INDUSTRY RAG PIPELINE ──────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
 
-def generate_research_brief(topic, vectorstore, judge_model):
-    if vectorstore is None:
-        return "No external documents provided."
-    retriever = vectorstore.as_retriever(search_type="mmr", search_kwargs={'k': 8, 'fetch_k': 15})
-    docs = retriever.invoke(topic)
-    context = "\n".join([f"Source: {d.metadata.get('source')} - Content: {d.page_content}" for d in docs])
-    
-    llm = ChatGoogleGenerativeAI(model=judge_model, google_api_key=api_key)
-    prompt = f"""You are the Lead Researcher Agent. Read the following retrieved documents for: '{topic}'.
-    Write a 'Research Brief' summarizing key findings and conflicting views. You MUST cite sources in brackets e.g.[Source: paper1.pdf].
-    DOCUMENTS CONTEXT:
-    {context}
+def process_documents(uploaded_files, is_append: bool = False):
     """
-    response = llm.invoke(prompt)
-    return parse_gemini_response(response)
-
-def process_documents(uploaded_files, is_append=False):
-    all_docs =[]
-    os.makedirs(TEMP_DOCS_DIR, exist_ok=True)
-        
-    for uploaded_file in uploaded_files:
-        file_path = os.path.join(TEMP_DOCS_DIR, uploaded_file.name)
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        loader = PyPDFLoader(file_path)
-        all_docs.extend(loader.load())
-    
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
-    splits = text_splitter.split_documents(all_docs)
-    
-    if is_append and st.session_state.vectorstore is not None:
-        st.session_state.vectorstore.add_documents(splits)
-        return st.session_state.vectorstore
-    else:
-        vectorstore = Chroma.from_documents(
-            documents=splits, 
-            embedding=GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001", google_api_key=api_key),
-            persist_directory=PERSIST_DIR 
-        )
-        return vectorstore
-
-# ==========================================
-# 🟢 5. BEAUTIFUL UI DESIGN
-# ==========================================
-st.markdown("""
-    <div style='text-align: center; padding: 20px;'>
-        <h1 style='color: #2e6c80;'>🏛️ DebateLM</h1>
-        <p style='font-size: 18px; color: gray;'>Upload knowledge, define AI personas, and watch them debate complex topics to find the truth.</p>
-    </div>
-    <hr>
-""", unsafe_allow_html=True)
-
-with st.sidebar:
-    st.button("➕ Create New Debate", type="primary", use_container_width=True, on_click=lambda: st.session_state.update(current_view="new"))
-    
-    st.header("⚙️ Settings")
-    # 🟢 Max 5 Agents, Max 5 Rounds
-    num_agents = st.slider("Number of Agents", 2, 5, 2, help="Choose up to 5 distinct AI agents.")
-    num_rounds = st.number_input("Number of Rounds", 1, 5, 2, help="Maximum 5 rounds per debate.")
-    global_judge_model = st.selectbox("Judge & Researcher Model", AVAILABLE_MODELS, index=1)
-
-    # 🟢 QUOTA COUNTER
-    st.divider()
-    st.header("📊 Usage Quota")
-    debates_used = len(st.session_state.past_debates)
-    progress_val = min(debates_used / MAX_DEBATES, 1.0)
-    st.progress(progress_val)
-    st.write(f"**Debates used:** {debates_used} / {MAX_DEBATES}")
-    if debates_used >= MAX_DEBATES:
-        st.error("🚨 You have reached the maximum limit of free debates for this session.")
-
-    st.divider()
-    st.header("📚 Private Knowledge Base")
-    
-    if st.session_state.vectorstore is not None:
-        st.success("📁 Ready for Debate!")
-        with st.expander("➕ Add more papers"):
-            new_files = st.file_uploader("Upload PDFs", type="pdf", accept_multiple_files=True, key="append")
-            if st.button("Add to Database 📥", use_container_width=True):
-                if new_files:
-                    with st.spinner("Processing..."):
-                        st.session_state.vectorstore = process_documents(new_files, is_append=True)
-                    st.rerun()
-    else:
-        uploaded_files = st.file_uploader("Upload PDFs to build brain", type="pdf", accept_multiple_files=True)
-        if st.button("Process & Save 📚", use_container_width=True):
-            if uploaded_files:
-                with st.spinner("Embedding papers..."):
-                    st.session_state.vectorstore = process_documents(uploaded_files, is_append=False)
-                st.rerun() 
-
-    if st.button("🚨 Clear My Documents", use_container_width=True):
-        if os.path.exists(PERSIST_DIR):
-            shutil.rmtree(PERSIST_DIR)
-        st.session_state.vectorstore = None
-        st.rerun()
-
-    st.divider()
-    st.header("🗄️ My Past Debates")
-    st.caption("Only you can see these.")
-    if len(st.session_state.past_debates) == 0:
-        st.caption("No past debates yet.")
-    else:
-        for i, past_debate in enumerate(st.session_state.past_debates):
-            short_topic = past_debate["topic"][:25] + "..." if len(past_debate["topic"]) > 25 else past_debate["topic"]
-            if st.button(f"🗓️ {short_topic}", key=f"hist_btn_{past_debate['id']}", use_container_width=True):
-                st.session_state.current_view = "history"
-                st.session_state.selected_history = past_debate
-
-# ==========================================
-# MAIN SCREEN AREA
-# ==========================================
-if st.session_state.current_view == "new":
-    
-    st.subheader("1. 🤖 Define Your Debaters")
-    st.caption(f"Configuring {num_agents} out of 5 possible agents.")
-    agents_config =[]
-    
-    for i in range(num_agents):
-        with st.expander(f"Agent {i+1} Configuration", expanded=(i==0)): 
-            col1, col2 = st.columns([1, 2])
-            
-            with col1:
-                selected_model = st.selectbox("Brain (Model)", AVAILABLE_MODELS, key=f"model_sel_{i}", index=1)
-                mode = st.radio("Persona Generation",["Manual", "AI Generated"], key=f"mode_{i}")
-                
-            with col2:
-                if mode == "Manual":
-                    if f"inst_{i}" not in st.session_state:
-                        st.session_state[f"inst_{i}"] = "You are a critical thinker. Argue your point logically."
-                    instruction = st.text_area("System Prompt", key=f"inst_{i}", height=100, on_change=auto_save)
-                else:
-                    instruction = "AI_WILL_GENERATE"
-                    st.info("✨ The AI will automatically generate a unique persona based on the topic.")
-            
-            agents_config.append({"id": i, "mode": mode, "instruction": instruction, "model": selected_model})
-
-    st.subheader("2. 🎯 Enter The Debate Topic")
-    if "debate_topic" not in st.session_state:
-        st.session_state.debate_topic = ""
-
-    topic = st.text_area(
-        "What should the agents debate?", 
-        key="debate_topic", 
-        placeholder="Example: Act as a panel of experts and debate the economic impact of universal basic income...",
-        height=100,
-        on_change=auto_save
+    Parent-Child Chunking Strategy:
+    1. Split into PARENT chunks (2 000 tokens) → saved to docstore for LLM context
+    2. Split PARENT chunks into CHILD chunks (400 tokens) → embedded in ChromaDB
+    3. Each child chunk carries parent_id metadata for lookup
+    """
+    parent_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=PARENT_CHUNK_SIZE,
+        chunk_overlap=PARENT_CHUNK_OVERLAP,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+    child_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHILD_CHUNK_SIZE,
+        chunk_overlap=CHILD_CHUNK_OVERLAP,
+        separators=["\n\n", "\n", ". ", " ", ""],
     )
 
-    # 🟢 Disable the launch button if quota is reached
-    can_launch = debates_used < MAX_DEBATES
-    
-    if st.button("Launch Debate 🚀", type="primary", use_container_width=True, disabled=not can_launch):
-        if not topic:
-            st.error("Please enter a topic first!")
-        elif not api_key:
-            st.error("Missing GEMINI_API_KEY in .env file!")
+    raw_docs: list[Document] = []
+    for uf in uploaded_files:
+        path = os.path.join(TEMP_DIR, uf.name)
+        with open(path, "wb") as f:
+            f.write(uf.getbuffer())
+        if uf.name.lower().endswith(".pdf"):
+            raw_docs.extend(PyPDFLoader(path).load())
         else:
-            with st.status("Initializing Debate Arena...", expanded=True) as status:
-                
-                # Step 1: Researcher
-                st.write("🕵️‍♂️ Researcher Agent is analyzing documents...")
-                research_brief = generate_research_brief(topic, st.session_state.vectorstore, global_judge_model)
-                
-                # Step 2: Finalize Personas
-                st.write("🎭 Finalizing Agent Personas...")
-                active_agents =[]
-                for i, agent in enumerate(agents_config):
-                    if agent["mode"] == "AI Generated":
-                        instr = get_ai_persona(topic, i, agent["model"])
-                    else:
-                        instr = agent["instruction"]
-                    active_agents.append({"instruction": instr, "model": agent["model"]})
-                
-                status.update(label="Debate in Progress!", state="complete", expanded=False)
+            raw_docs.extend(TextLoader(path).load())
 
-            with st.expander("📄 View Lead Researcher's Brief"):
-                st.write(research_brief)
+    parent_docs = parent_splitter.split_documents(raw_docs)
+    child_docs: list[Document] = []
+    docstore: dict = st.session_state.docstore if is_append else {}
 
-            debate_history =[] 
-            
-            for r in range(num_rounds):
-                st.markdown(f"<h3 style='text-align:center; color:gray;'>--- Round {r+1} ---</h3>", unsafe_allow_html=True)
-                
-                for i, agent_data in enumerate(active_agents):
-                    with st.chat_message(f"agent_{i+1}"):
-                        with st.spinner(f"Agent {i+1} ({agent_data['model']}) is formulating argument..."):
-                            
-                            agent_llm = ChatGoogleGenerativeAI(model=agent_data['model'], google_api_key=api_key)
-                            
-                            # Dynamically decide if we should ask for citations
-                            if research_brief == "No external documents provided.":
-                                citation_rule = "- Base arguments on your general knowledge. DO NOT invent or hallucinate citations."
-                            else:
-                                citation_rule = "- Base arguments on the Research Brief and strictly cite sources in brackets."
+    for parent in parent_docs:
+        parent_id = str(uuid.uuid4())
+        docstore[parent_id] = {
+            "content":  parent.page_content,
+            "metadata": parent.metadata,
+        }
+        children = child_splitter.split_documents([parent])
+        for child in children:
+            child.metadata["parent_id"] = parent_id
+            child.metadata["source"]    = parent.metadata.get("source", "unknown")
+        child_docs.extend(children)
 
-                            system_prompt = f"""
-                            SYSTEM INSTRUCTION: {agent_data['instruction']}
-                            SHARED RESEARCH BRIEF: {research_brief}
+    st.session_state.docstore = docstore
+    save_docstore(docstore)
 
-                            INSTRUCTIONS:
-                            - Address the topic: {topic}
-                            {citation_rule}
-                            - Directly address and rebut the previous speakers.
-                            """
-                            messages =[SystemMessage(content=system_prompt)]
-                            
-                            if len(debate_history) == 0:
-                                user_prompt = f"The debate is starting. Provide your opening statement on: '{topic}'"
-                            else:
-                                history_text = "\n".join(debate_history)
-                                user_prompt = f"History so far:\n{history_text}\n\nYour turn to rebut or argue."
-                                
-                            messages.append(HumanMessage(content=user_prompt))
-                            
-                            response = agent_llm.invoke(messages)
-                            answer = parse_gemini_response(response)
-                        
-                        st.write(f"**Agent {i+1} says:**")
-                        st.write(answer)
-                        debate_history.append(f"Agent {i+1}: {answer}")
+    emb = GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004",
+        google_api_key=GEMINI_API_KEY,
+    )
 
-            # Step 3: Judge
-            st.divider()
-            st.header("⚖️ Final Synthesizer Verdict")
-            with st.spinner("Judge is analyzing the debate..."):
-                judge_llm = ChatGoogleGenerativeAI(model=global_judge_model, google_api_key=api_key)
-                if research_brief == "No external documents provided.":
-                    judge_citation_rule = "Rely on the transcript provided. Do not invent citations."
-                else:
-                    judge_citation_rule = "Strictly include citations from the Research Brief."
+    if is_append and st.session_state.vectorstore is not None:
+        st.session_state.vectorstore.add_documents(child_docs)
+        vs = st.session_state.vectorstore
+    else:
+        vs = Chroma.from_documents(
+            documents=child_docs,
+            embedding=emb,
+            persist_directory=PERSIST_DIR,
+        )
 
-                verdict_prompt = f"""
-                You are the Final Synthesizer.
-                TOPIC: "{topic}"
-                RESEARCH BRIEF: {research_brief}
-                TRANSCRIPT: {chr(10).join(debate_history)}
+    # ── Build / rebuild BM25 retriever ──────────────────────────────────
+    all_children = vs.get()["documents"]
+    bm25_docs = [Document(page_content=txt) for txt in all_children]
+    st.session_state.bm25_retriever = BM25Retriever.from_documents(bm25_docs)
+    st.session_state.bm25_retriever.k = TOP_K_RETRIEVAL
 
-                INSTRUCTIONS: Provide a final, balanced verdict. Speak directly to the user. {judge_citation_rule}
-                """
-                verdict = judge_llm.invoke(verdict_prompt)
-                final_answer = parse_gemini_response(verdict)
-                
-                st.success("Conclusion Reached!")
-                st.markdown(final_answer)
-                
-                # Save debate AND the model used to judge it
-                new_record = save_new_debate(topic, debate_history, final_answer, research_brief, global_judge_model)
-                st.session_state.current_view = "history"
-                st.session_state.selected_history = new_record
+    return vs
+
+def _get_parent_context(child_docs: list[Document]) -> str:
+    """Swap child chunks for their full parent chunks."""
+    seen = set()
+    parents = []
+    for doc in child_docs:
+        pid = doc.metadata.get("parent_id")
+        if pid and pid not in seen:
+            seen.add(pid)
+            entry = st.session_state.docstore.get(pid)
+            if entry:
+                src = entry["metadata"].get("source", "?")
+                parents.append(f"[Source: {src}]\n{entry['content']}")
+            else:
+                parents.append(doc.page_content)
+        elif not pid:
+            parents.append(doc.page_content)
+    return "\n\n---\n\n".join(parents)
+
+def hyde_query(topic: str, llm: ChatGoogleGenerativeAI) -> str:
+    """Hypothetical Document Embedding — generates a fake 'ideal document' for better retrieval."""
+    prompt = (
+        f"Write a 3-sentence excerpt from an authoritative academic paper or expert report "
+        f"that directly addresses: '{topic}'. Be factual and specific."
+    )
+    resp = llm.invoke(prompt)
+    return parse_response(resp)
+
+def hybrid_retrieve(query: str, llm: ChatGoogleGenerativeAI) -> list[Document]:
+    """
+    Hybrid retrieval:
+      1. HyDE expands the query
+      2. Semantic (ChromaDB MMR) + Lexical (BM25) run in parallel
+      3. EnsembleRetriever merges with RRF (Reciprocal Rank Fusion)
+      4. CrossEncoder re-ranks top candidates
+    Returns top-K re-ranked Documents (child chunks).
+    """
+    vs = st.session_state.vectorstore
+    bm25 = st.session_state.bm25_retriever
+    if vs is None:
+        return []
+
+    # HyDE expansion
+    try:
+        hyp_doc = hyde_query(query, llm)
+        retrieval_query = f"{query}\n\n{hyp_doc}"
+    except Exception:
+        retrieval_query = query
+
+    semantic_retriever = vs.as_retriever(
+        search_type="mmr",
+        search_kwargs={"k": TOP_K_RETRIEVAL, "fetch_k": TOP_K_RETRIEVAL * 3, "lambda_mult": 0.6},
+    )
+
+    if bm25 is not None:
+        ensemble = EnsembleRetriever(
+            retrievers=[bm25, semantic_retriever],
+            weights=[0.35, 0.65],
+        )
+        candidates = ensemble.invoke(retrieval_query)
+    else:
+        candidates = semantic_retriever.invoke(retrieval_query)
+
+    # CrossEncoder Re-Ranking
+    try:
+        cross_encoder = HuggingFaceCrossEncoder(model_name="cross-encoder/ms-marco-MiniLM-L-6-v2")
+        compressor     = CrossEncoderReranker(model=cross_encoder, top_n=TOP_K_FINAL)
+        compression_retriever = ContextualCompressionRetriever(
+            base_compressor=compressor,
+            base_retriever=semantic_retriever,
+        )
+        reranked = compressor.compress_documents(candidates, query)
+        return reranked[:TOP_K_FINAL]
+    except Exception:
+        return candidates[:TOP_K_FINAL]
+
+# ═══════════════════════════════════════════════════════════════════════════
+# WEB SEARCH (Serper)
+# ═══════════════════════════════════════════════════════════════════════════
+def serper_search(query: str, num_results: int = 6) -> list[dict]:
+    """Real-time Google Search via Serper API."""
+    if not SERPER_API_KEY:
+        return []
+    try:
+        resp = requests.post(
+            "https://google.serper.dev/search",
+            headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+            json={"q": query, "num": num_results, "hl": "en"},
+            timeout=10,
+        )
+        data = resp.json()
+        results = []
+        for item in data.get("organic", [])[:num_results]:
+            results.append({
+                "title":   item.get("title", ""),
+                "snippet": item.get("snippet", ""),
+                "link":    item.get("link", ""),
+            })
+        return results
+    except Exception:
+        return []
+
+def format_web_evidence(results: list[dict]) -> str:
+    if not results:
+        return ""
+    lines = ["### 🌐 Live Web Evidence\n"]
+    for i, r in enumerate(results, 1):
+        lines.append(f"{i}. **{r['title']}**\n   {r['snippet']}\n   Source: {r['link']}\n")
+    return "\n".join(lines)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CORE AI FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════
+def parse_response(response) -> str:
+    content = response.content
+    if isinstance(content, list):
+        return "\n".join(
+            block.get("text", "") for block in content
+            if isinstance(block, dict) and "text" in block
+        )
+    return str(content)
+
+def get_llm(model: str, streaming: bool = False) -> ChatGoogleGenerativeAI:
+    return ChatGoogleGenerativeAI(
+        model=model,
+        google_api_key=GEMINI_API_KEY,
+        streaming=streaming,
+        temperature=0.7,
+    )
+
+def generate_persona(topic: str, agent_idx: int, model: str) -> str:
+    llm = get_llm(model)
+    prompt = (
+        f"Topic: '{topic}'\n"
+        f"Create a 2-sentence system instruction for Debate Agent {agent_idx + 1}. "
+        f"Give them a very specific professional background (e.g. 'former World Bank economist turned climate activist'), "
+        f"a strong bias, and a distinct rhetorical style. Be creative and specific."
+    )
+    return parse_response(llm.invoke(prompt))
+
+def generate_research_brief(topic: str, judge_model: str) -> tuple[str, list[dict]]:
+    """
+    Produces the Research Brief by combining:
+    - Parent-child RAG retrieval (local PDFs)
+    - Live Serper web search results
+    """
+    llm = get_llm(judge_model)
+    rag_context = ""
+    web_results: list[dict] = []
+
+    # ── Local knowledge base ─────────────────────────────────────────────
+    if st.session_state.vectorstore is not None:
+        child_docs = hybrid_retrieve(topic, llm)
+        rag_context = _get_parent_context(child_docs)
+
+    # ── Live web grounding ───────────────────────────────────────────────
+    if SERPER_API_KEY:
+        web_results = serper_search(f"{topic} expert analysis research 2025", num_results=6)
+
+    web_text = format_web_evidence(web_results)
+    has_rag  = bool(rag_context.strip())
+    has_web  = bool(web_text.strip())
+
+    if not has_rag and not has_web:
+        return "No external documents or web evidence provided. Agents will rely on general knowledge.", []
+
+    context_block = ""
+    if has_rag:
+        context_block += f"\n\n=== KNOWLEDGE BASE (Uploaded Documents) ===\n{rag_context}"
+    if has_web:
+        context_block += f"\n\n=== LIVE WEB EVIDENCE ===\n{web_text}"
+
+    system = (
+        "You are the Chief Research Analyst. Your job is to synthesize all available evidence "
+        "into a concise, structured Research Brief for AI debaters. "
+        "Always cite sources inline using [Source: filename] for documents and [Web: URL] for web results. "
+        "Identify key facts, contested claims, and open questions."
+    )
+    user = (
+        f"Debate Topic: '{topic}'\n\n"
+        f"EVIDENCE:{context_block}\n\n"
+        "Write a structured Research Brief (400–600 words) with sections: "
+        "KEY FACTS, CONTESTED CLAIMS, EXPERT PERSPECTIVES, OPEN QUESTIONS. "
+        "Cite every claim."
+    )
+    resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+    return parse_response(resp), web_results
+
+def run_agent_turn(
+    agent_idx: int,
+    agent_data: dict,
+    topic: str,
+    research_brief: str,
+    web_evidence: list[dict],
+    debate_history: list[str],
+    round_num: int,
+) -> str:
+    llm = get_llm(agent_data["model"])
+
+    web_context = format_web_evidence(web_evidence) if web_evidence else ""
+    citation_rule = (
+        "Cite specific sources from the Research Brief using [Source: ...] or [Web: URL] notation. "
+        "Every empirical claim MUST have a citation."
+        if research_brief and research_brief != "No external documents or web evidence provided. Agents will rely on general knowledge."
+        else "Base your arguments on first principles and general knowledge. Do NOT fabricate citations."
+    )
+
+    system = (
+        f"IDENTITY: {agent_data['instruction']}\n\n"
+        f"RESEARCH BRIEF (ground truth):\n{research_brief}\n\n"
+        f"LIVE WEB EVIDENCE:\n{web_context}\n\n"
+        "DEBATE RULES:\n"
+        f"- {citation_rule}\n"
+        "- Make 2–3 sharp, well-structured arguments per turn.\n"
+        "- Directly rebut the PREVIOUS speaker's weakest claim.\n"
+        "- Be intellectually aggressive but factually rigorous.\n"
+        "- End with a memorable closing line this round.\n"
+        "- Keep response to 200–350 words.\n"
+        "- Format: clear paragraphs, no bullet lists."
+    )
+
+    if not debate_history:
+        user_msg = f"Round {round_num} — Opening statement. Topic: '{topic}'"
+    else:
+        history_text = "\n\n".join(debate_history[-6:])  # last 3 exchanges for context
+        user_msg = (
+            f"Round {round_num} — Debate so far:\n\n{history_text}\n\n"
+            f"Now make your strongest argument on: '{topic}'"
+        )
+
+    resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user_msg)])
+    return parse_response(resp)
+
+def run_judge(topic: str, research_brief: str, debate_history: list[str], judge_model: str) -> str:
+    llm = get_llm(judge_model)
+    transcript = "\n\n".join(debate_history)
+    system = (
+        "You are the Final Synthesizer — a neutral, wise adjudicator. "
+        "Your verdict must be evidence-based, fair, and intellectually honest. "
+        "Cite specific arguments and sources. Speak directly to the reader."
+    )
+    user = (
+        f"TOPIC: '{topic}'\n\n"
+        f"RESEARCH BRIEF:\n{research_brief}\n\n"
+        f"FULL TRANSCRIPT:\n{transcript}\n\n"
+        "Deliver your FINAL VERDICT with these sections:\n"
+        "1. STRONGEST ARGUMENTS (per side)\n"
+        "2. WEAKEST ARGUMENTS (what failed)\n"
+        "3. EVIDENCE QUALITY (who cited best)\n"
+        "4. SYNTHESIS — the truth as best you can determine it\n"
+        "5. WHAT REMAINS CONTESTED\n\n"
+        "Be bold, precise, and cite sources throughout. 400–600 words."
+    )
+    resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
+    return parse_response(resp)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SIDEBAR
+# ═══════════════════════════════════════════════════════════════════════════
+with st.sidebar:
+    st.markdown(
+        "<div style='font-family:Playfair Display,serif;font-size:1.3rem;"
+        "color:#c9a96e;text-align:center;padding:0.5rem 0 1rem 0;'>⚖️ DebateLM</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.button(
+        "➕ New Debate",
+        type="primary",
+        use_container_width=True,
+        on_click=lambda: st.session_state.update(current_view="new"),
+    )
+
+    st.markdown("---")
+    st.markdown("#### ⚙️ Debate Settings")
+    num_agents = st.slider("Debaters", 2, 5, 2)
+    num_rounds = st.slider("Rounds", 1, 5, 2)
+    judge_model = st.selectbox("Judge Model", AVAILABLE_MODELS, index=0)
+
+    st.markdown("---")
+    st.markdown("#### 📚 Knowledge Base")
+
+    doc_count = 0
+    if st.session_state.vectorstore:
+        try:
+            doc_count = st.session_state.vectorstore._collection.count()
+        except Exception:
+            pass
+        st.success(f"✅ {doc_count} chunks indexed")
+
+        with st.expander("Add more documents"):
+            more_files = st.file_uploader(
+                "Upload PDFs / TXT",
+                type=["pdf", "txt"],
+                accept_multiple_files=True,
+                key="append_files",
+            )
+            if st.button("Add to KB ➕", use_container_width=True):
+                if more_files:
+                    with st.spinner("Indexing…"):
+                        st.session_state.vectorstore = process_documents(more_files, is_append=True)
+                    st.rerun()
+    else:
+        uploaded_files = st.file_uploader(
+            "Upload PDFs / TXT",
+            type=["pdf", "txt"],
+            accept_multiple_files=True,
+        )
+        if st.button("Build Knowledge Base 🧠", use_container_width=True, type="primary"):
+            if uploaded_files:
+                with st.spinner("Building RAG pipeline… (parent-child chunking + BM25 + embeddings)"):
+                    st.session_state.vectorstore = process_documents(uploaded_files)
+                st.success("Knowledge base ready!")
                 st.rerun()
 
+    if st.session_state.vectorstore and st.button("🗑️ Clear Knowledge Base", use_container_width=True):
+        if os.path.exists(PERSIST_DIR):
+            shutil.rmtree(PERSIST_DIR)
+        st.session_state.vectorstore   = None
+        st.session_state.bm25_retriever = None
+        st.session_state.docstore       = {}
+        save_docstore({})
+        st.rerun()
+
+    # API key status
+    st.markdown("---")
+    st.markdown("#### 🔑 API Status")
+    col1, col2 = st.columns(2)
+    col1.markdown(
+        f"<div style='font-size:0.75rem;color:{'#6abf6a' if GEMINI_API_KEY else '#bf6a6a'}'>"
+        f"{'✅' if GEMINI_API_KEY else '❌'} Gemini</div>",
+        unsafe_allow_html=True,
+    )
+    col2.markdown(
+        f"<div style='font-size:0.75rem;color:{'#6abf6a' if SERPER_API_KEY else '#7a7070'}'>"
+        f"{'✅' if SERPER_API_KEY else '⚪'} Serper</div>",
+        unsafe_allow_html=True,
+    )
+
+    # Quota
+    debates_used = len(st.session_state.past_debates)
+    st.markdown("---")
+    st.markdown(f"#### 📊 Usage  `{debates_used}/{MAX_DEBATES}`")
+    st.progress(min(debates_used / MAX_DEBATES, 1.0))
+
+    # History list
+    st.markdown("---")
+    st.markdown("#### 🗄️ Past Debates")
+    if not st.session_state.past_debates:
+        st.caption("No debates yet.")
+    for rec in st.session_state.past_debates:
+        short = rec["topic"][:28] + "…" if len(rec["topic"]) > 28 else rec["topic"]
+        if st.button(f"🗓 {short}", key=f"h_{rec['id']}", use_container_width=True):
+            st.session_state.current_view    = "history"
+            st.session_state.selected_history = rec
+            st.rerun()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HERO HEADER
+# ═══════════════════════════════════════════════════════════════════════════
+st.markdown(
+    "<div class='hero-title'>DebateLM</div>"
+    "<div class='hero-sub'>NotebookLM-Level Retrieval · Multi-Agent AI Debate · Live Web Grounding</div>"
+    "<hr class='hero-divider'>",
+    unsafe_allow_html=True,
+)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# VIEW: NEW DEBATE
+# ═══════════════════════════════════════════════════════════════════════════
+if st.session_state.current_view == "new":
+    can_debate = debates_used < MAX_DEBATES and bool(GEMINI_API_KEY)
+
+    st.subheader("1 · Configure Debaters")
+    agents_config = []
+    cols = st.columns(min(num_agents, 3))
+    for i in range(num_agents):
+        col = cols[i % len(cols)]
+        with col:
+            with st.container(border=True):
+                st.markdown(f"**Agent {i + 1}**")
+                model_sel = st.selectbox("Model", AVAILABLE_MODELS, key=f"model_{i}", index=0)
+                mode = st.radio("Persona", ["AI Generated", "Manual"], key=f"mode_{i}", horizontal=True)
+                if mode == "Manual":
+                    if f"inst_{i}" not in st.session_state:
+                        st.session_state[f"inst_{i}"] = "You are a rigorous empiricist. Demand evidence for every claim."
+                    instruction = st.text_area("System prompt", key=f"inst_{i}", height=80, on_change=auto_save)
+                else:
+                    instruction = "__AI_GENERATED__"
+                    st.caption("✨ Persona auto-generated from topic")
+                agents_config.append({"id": i, "mode": mode, "instruction": instruction, "model": model_sel})
+
+    st.divider()
+    st.subheader("2 · Enter the Debate Topic")
+    if "debate_topic" not in st.session_state:
+        st.session_state.debate_topic = ""
+    topic = st.text_area(
+        "Topic",
+        key="debate_topic",
+        placeholder="e.g. Should central banks adopt CBDC? What are the economic trade-offs of UBI? Is AGI an existential risk?",
+        height=90,
+        on_change=auto_save,
+        label_visibility="collapsed",
+    )
+
+    # Web search toggle
+    use_web = st.toggle("🌐 Enable live web search (Serper)", value=bool(SERPER_API_KEY), disabled=not SERPER_API_KEY,
+                        help="Requires SERPER_API_KEY in .env")
+
+    if not GEMINI_API_KEY:
+        st.error("❌ GEMINI_API_KEY missing from .env")
+    if debates_used >= MAX_DEBATES:
+        st.warning(f"🚨 Debate quota reached ({MAX_DEBATES}). Clear history to continue.")
+
+    launch = st.button("⚖️ Launch Debate", type="primary", use_container_width=True, disabled=not can_debate)
+
+    if launch:
+        if not topic.strip():
+            st.error("Please enter a debate topic first.")
+            st.stop()
+
+        # ── Step 1: Research Brief ─────────────────────────────────────
+        with st.status("🕵️ Chief Research Analyst is building the brief…", expanded=True) as status:
+            st.write("Running hybrid RAG retrieval (BM25 + semantic + HyDE + re-rank)…")
+            with st.spinner():
+                research_brief, web_evidence = generate_research_brief(
+                    topic,
+                    judge_model,
+                )
+            status.update(label="✅ Research brief ready", state="complete")
+
+        with st.expander("📄 Research Brief (click to expand)", expanded=False):
+            st.markdown(research_brief)
+            if web_evidence:
+                st.markdown("---")
+                st.markdown("**🌐 Web sources consulted:**")
+                for r in web_evidence:
+                    st.markdown(f"- [{r['title']}]({r['link']})")
+
+        # ── Step 2: Finalize personas ──────────────────────────────────
+        with st.spinner("🎭 Generating agent personas…"):
+            active_agents = []
+            for ag in agents_config:
+                if ag["mode"] == "AI Generated":
+                    instr = generate_persona(topic, ag["id"], ag["model"])
+                else:
+                    instr = ag["instruction"]
+                active_agents.append({"instruction": instr, "model": ag["model"]})
+
+        # ── Step 3: Debate rounds ──────────────────────────────────────
+        debate_history: list[str] = []
+
+        AGENT_COLORS = ["#c9a96e", "#7ab8c9", "#c97ab8", "#7ac97a", "#c97a7a"]
+
+        for r in range(num_rounds):
+            st.markdown(
+                f"<div class='round-badge'>— Round {r + 1} of {num_rounds} —</div>",
+                unsafe_allow_html=True,
+            )
+            for i, ag in enumerate(active_agents):
+                color = AGENT_COLORS[i % len(AGENT_COLORS)]
+                with st.spinner(f"Agent {i+1} ({ag['model']}) is formulating…"):
+                    argument = run_agent_turn(
+                        agent_idx=i,
+                        agent_data=ag,
+                        topic=topic,
+                        research_brief=research_brief,
+                        web_evidence=web_evidence if use_web else [],
+                        debate_history=debate_history,
+                        round_num=r + 1,
+                    )
+                st.markdown(
+                    f"<div class='debate-bubble'>"
+                    f"<div class='speaker-tag' style='color:{color}'>Agent {i+1} · {ag['model'].split('/')[0]}</div>"
+                    f"{argument.replace(chr(10), '<br>')}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+                debate_history.append(f"Agent {i+1}: {argument}")
+
+        # ── Step 4: Judge ──────────────────────────────────────────────
+        st.markdown("<div class='round-badge'>— Final Verdict —</div>", unsafe_allow_html=True)
+        with st.spinner(f"⚖️ Judge ({judge_model}) is deliberating…"):
+            verdict = run_judge(topic, research_brief, debate_history, judge_model)
+
+        st.markdown(
+            f"<div class='debate-bubble judge'>"
+            f"<div class='speaker-tag'>⚖️ Final Synthesizer · {judge_model}</div>"
+            f"{verdict.replace(chr(10), '<br>')}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        # ── Save & navigate ────────────────────────────────────────────
+        new_rec = save_new_debate(
+            topic, debate_history, verdict, research_brief,
+            web_evidence if use_web else [], judge_model,
+        )
+        st.session_state.current_view     = "history"
+        st.session_state.selected_history = new_rec
+        st.rerun()
+
+# ═══════════════════════════════════════════════════════════════════════════
+# VIEW: HISTORY / POST-DEBATE CHAT
+# ═══════════════════════════════════════════════════════════════════════════
 elif st.session_state.current_view == "history":
-    past_data = st.session_state.selected_history
-    
-    st.button("⬅️ Back to Setup", on_click=lambda: st.session_state.update(current_view="new"))
-    
-    st.info(f"📅 **Date Recorded:** {past_data['date']}")
-    st.subheader(f"📝 Topic: {past_data['topic']}")
-    
-    with st.expander("🕵️‍♂️ View Original Research Brief"):
-        st.write(past_data.get("research_brief", "No brief available."))
-        
-    st.divider()
-    st.markdown("### 📜 Debate Transcript")
-    for msg in past_data['history']:
-        agent_name, text = msg.split(": ", 1)
-        with st.chat_message(agent_name.lower().replace(" ", "_")):
-            st.write(f"**{agent_name} says:**")
-            st.write(text)
-            
-    st.divider()
-    st.header("⚖️ Final Conclusion")
-    st.markdown(past_data['verdict'])
-    
-    # POST-DEBATE CHAT
-    st.divider()
-    st.header("💬 Talk to the Synthesizer")
-    st.caption("Ask follow-up questions about this debate without restarting it.")
+    past = st.session_state.selected_history
+    if not past:
+        st.session_state.current_view = "new"
+        st.rerun()
 
-    if "post_chat" not in past_data:
-        past_data["post_chat"] =[]
+    st.button("← Back to Setup", on_click=lambda: st.session_state.update(current_view="new"))
 
-    for chat_msg in past_data["post_chat"]:
-        with st.chat_message(chat_msg["role"]):
-            st.write(chat_msg["content"])
+    st.markdown(f"<div style='color:#7a7060;font-size:0.8rem;'>📅 {past['date']}</div>", unsafe_allow_html=True)
+    st.markdown(f"## {past['topic']}")
 
-    if user_question := st.chat_input("Ask a follow-up question..."):
-        past_data["post_chat"].append({"role": "user", "content": user_question})
-        with st.chat_message("user"):
-            st.write(user_question)
-            
-        chat_model = past_data.get("judge_model", AVAILABLE_MODELS[1])
-        llm = ChatGoogleGenerativeAI(model=chat_model, google_api_key=api_key)
-        
-        if past_data.get('research_brief') == "No external documents provided.":
-            follow_up_rule = "Answer the user's follow-up questions based on general knowledge and the debate."
-        else:
-            follow_up_rule = "Answer the user's follow-up questions. Continue citing sources from the brief."
-        
-        sys_context = f"""You are the Final Synthesizer. You just concluded a debate on '{past_data['topic']}'.
-        RESEARCH BRIEF: {past_data.get('research_brief', 'N/A')}
-        YOUR FINAL VERDICT: {past_data['verdict']}
-        {follow_up_rule}"""
-        
-        messages =[SystemMessage(content=sys_context)]
-        for m in past_data["post_chat"]:
-            if m["role"] == "user":
-                messages.append(HumanMessage(content=m["content"]))
-            else:
-                messages.append(AIMessage(content=m["content"]))
-                
-        with st.chat_message("assistant"):
-            with st.spinner(f"Synthesizer ({chat_model}) is thinking..."):
-                response = llm.invoke(messages)
-                answer = parse_gemini_response(response)
-                st.write(answer)
-                
-        past_data["post_chat"].append({"role": "assistant", "content": answer})
-        
-        for i, record in enumerate(st.session_state.past_debates):
-            if record["id"] == past_data["id"]:
-                st.session_state.past_debates[i] = past_data
-                break
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(st.session_state.past_debates, f)
+    tab1, tab2, tab3 = st.tabs(["📜 Transcript", "📄 Research Brief", "💬 Follow-up Chat"])
+
+    with tab1:
+        AGENT_COLORS = ["#c9a96e", "#7ab8c9", "#c97ab8", "#7ac97a", "#c97a7a"]
+        for msg in past["history"]:
+            if ": " in msg:
+                speaker, text = msg.split(": ", 1)
+                idx = int(re.search(r"\d+", speaker).group()) - 1 if re.search(r"\d+", speaker) else 0
+                color = AGENT_COLORS[idx % len(AGENT_COLORS)]
+                st.markdown(
+                    f"<div class='debate-bubble'>"
+                    f"<div class='speaker-tag' style='color:{color}'>{speaker}</div>"
+                    f"{text.replace(chr(10), '<br>')}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+        st.markdown("<div class='round-badge'>— Final Verdict —</div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='debate-bubble judge'>"
+            f"<div class='speaker-tag'>⚖️ Final Synthesizer</div>"
+            f"{past['verdict'].replace(chr(10), '<br>')}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    with tab2:
+        brief = past.get("research_brief", "No brief available.")
+        st.markdown(brief)
+        web_ev = past.get("web_evidence", [])
+        if web_ev:
+            st.markdown("---\n**🌐 Web sources consulted:**")
+            for r in web_ev:
+                st.markdown(f"- [{r['title']}]({r['link']})")
+
+    with tab3:
+        st.caption(
+            "Ask the Synthesizer anything about this debate — "
+            "it remembers the full transcript, research brief, and verdict."
+        )
+        if "post_chat" not in past:
+            past["post_chat"] = []
+
+        for cm in past["post_chat"]:
+            with st.chat_message(cm["role"]):
+                st.markdown(cm["content"])
+
+        if q := st.chat_input("Ask a follow-up question…"):
+            past["post_chat"].append({"role": "user", "content": q})
+            with st.chat_message("user"):
+                st.markdown(q)
+
+            chat_llm = get_llm(past.get("judge_model", DEFAULT_MODEL))
+            sys_ctx = (
+                f"You are the Final Synthesizer. You concluded a debate on: '{past['topic']}'.\n\n"
+                f"RESEARCH BRIEF:\n{past.get('research_brief', 'N/A')}\n\n"
+                f"YOUR VERDICT:\n{past['verdict']}\n\n"
+                "Answer follow-up questions with precision. Cite sources from the brief where relevant."
+            )
+            messages = [SystemMessage(content=sys_ctx)]
+            for cm in past["post_chat"]:
+                if cm["role"] == "user":
+                    messages.append(HumanMessage(content=cm["content"]))
+                else:
+                    messages.append(AIMessage(content=cm["content"]))
+
+            with st.chat_message("assistant"):
+                with st.spinner("Synthesizer is thinking…"):
+                    resp = chat_llm.invoke(messages)
+                    ans  = parse_response(resp)
+                    st.markdown(ans)
+
+            past["post_chat"].append({"role": "assistant", "content": ans})
+
+            for i, rec in enumerate(st.session_state.past_debates):
+                if rec["id"] == past["id"]:
+                    st.session_state.past_debates[i] = past
+                    break
+            with open(HISTORY_FILE, "w") as f:
+                json.dump(st.session_state.past_debates, f, indent=2)
