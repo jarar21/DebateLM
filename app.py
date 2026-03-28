@@ -14,7 +14,6 @@ Search Grounding:
   • Serper (Google Search API) for real-time web evidence
 
 AI Backbone:
-  • Gemini 2.5 Flash / Pro (latest 2025 models)
   • Streaming responses with st.write_stream
   • Per-user isolated storage (IP-hashed)
 """
