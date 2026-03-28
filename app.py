@@ -1,26 +1,37 @@
+"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                         DebateLM — Version 2                                 ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+RAG Stack:
+  • Parent-Child Chunking  (small retrieval chunks → large context windows)
+  • Hybrid Search          (BM25 lexical + ChromaDB semantic)
+  • Cross-Encoder Re-Rank  (ms-marco-MiniLM for result quality)
+  • HyDE                   (Hypothetical Document Embeddings for better recall)
+  • MMR Diversity          (avoid redundant context)
+
+Search Grounding:
+  • Serper (Google Search API) for real-time web evidence
+
+AI Backbone:
+  • Gemini 2.5 Flash / Pro (latest 2025 models)
+  • Streaming responses with st.write_stream
+  • Per-user isolated storage (IP-hashed)
+"""
+
 import streamlit as st
 import os, json, datetime, uuid, hashlib, shutil, time, re
 from typing import Optional
 from dotenv import load_dotenv
 
-# ── LangChain core ──────────────────────────────────────────────────────────
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_chroma import Chroma                                    
+from langchain_chroma import Chroma
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_core.documents import Document
-
-# ── Hybrid Search ─────────────────────────────────────────────────────────
 from langchain_community.retrievers import BM25Retriever
-from langchain.retrievers import EnsembleRetriever
-
-# ── Re-Ranking ────────────────────────────────────────────────────────────
-from langchain.retrievers.document_compressors import CrossEncoderReranker
-from langchain_community.cross_encoders import HuggingFaceCrossEncoder
-from langchain.retrievers import ContextualCompressionRetriever
-
-# ── Web search (Serper) ───────────────────────────────────────────────────
+from langchain_community.retrievers import EnsembleRetriever
 import requests
 
 load_dotenv()
@@ -31,21 +42,20 @@ load_dotenv()
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY", "")
 SERPER_API_KEY  = os.getenv("SERPER_API_KEY", "")
 
-AVAILABLE_MODELS =[
-    "gemini-3.1-pro-preview",
+AVAILABLE_MODELS = [
     "gemini-3-flash-preview",
-    "gemini-3.1-flash-lite-preview"
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-lite-preview",
 ]
 DEFAULT_MODEL = AVAILABLE_MODELS[0]
-MAX_DEBATES   = 50   # per-user cap
+MAX_DEBATES   = 50
 
-# ── Chunking constants (Parent-Child) ────────────────────────────────────
-PARENT_CHUNK_SIZE  = 2000   # stored in docstore for LLM context
+PARENT_CHUNK_SIZE    = 2000
 PARENT_CHUNK_OVERLAP = 200
-CHILD_CHUNK_SIZE   = 400    # indexed in vectorstore for retrieval
-CHILD_CHUNK_OVERLAP = 50
-TOP_K_RETRIEVAL    = 20     # candidates before re-rank
-TOP_K_FINAL        = 8      # after re-rank
+CHILD_CHUNK_SIZE     = 400
+CHILD_CHUNK_OVERLAP  = 50
+TOP_K_RETRIEVAL      = 20
+TOP_K_FINAL          = 8
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PAGE CONFIG  — dark, judicial theme
@@ -223,6 +233,7 @@ section[data-testid="stSidebar"] .stButton > button:hover {
 </style>
 """, unsafe_allow_html=True)
 
+# ═══════════════════════════════════════════════════════════════════════════
 # USER ISOLATION
 # ═══════════════════════════════════════════════════════════════════════════
 def get_user_id() -> str:
@@ -440,21 +451,37 @@ def hyde_query(topic: str, llm: ChatGoogleGenerativeAI) -> str:
     resp = llm.invoke(prompt)
     return parse_response(resp)
 
+def gemini_rerank(query: str, candidates: list[Document], llm: ChatGoogleGenerativeAI) -> list[Document]:
+    if not candidates:
+        return candidates
+    numbered = "\n".join(
+        f"{i+1}. {doc.page_content[:300]}" for i, doc in enumerate(candidates)
+    )
+    prompt = (
+        f"You are a relevance ranker. Given the query below, rank the following passages "
+        f"by relevance (most relevant first). Reply ONLY with the numbers in order, comma-separated. "
+        f"Example: 3,1,5,2,4\n\nQuery: {query}\n\nPassages:\n{numbered}"
+    )
+    try:
+        resp = llm.invoke(prompt)
+        raw = parse_response(resp).strip()
+        indices = [int(x.strip()) - 1 for x in raw.split(",") if x.strip().isdigit()]
+        reranked = [candidates[i] for i in indices if 0 <= i < len(candidates)]
+        seen = set(id(d) for d in reranked)
+        for d in candidates:
+            if id(d) not in seen:
+                reranked.append(d)
+        return reranked[:TOP_K_FINAL]
+    except Exception:
+        return candidates[:TOP_K_FINAL]
+
+
 def hybrid_retrieve(query: str, llm: ChatGoogleGenerativeAI) -> list[Document]:
-    """
-    Hybrid retrieval:
-      1. HyDE expands the query
-      2. Semantic (ChromaDB MMR) + Lexical (BM25) run in parallel
-      3. EnsembleRetriever merges with RRF (Reciprocal Rank Fusion)
-      4. CrossEncoder re-ranks top candidates
-    Returns top-K re-ranked Documents (child chunks).
-    """
     vs = st.session_state.vectorstore
     bm25 = st.session_state.bm25_retriever
     if vs is None:
         return []
 
-    # HyDE expansion
     try:
         hyp_doc = hyde_query(query, llm)
         retrieval_query = f"{query}\n\n{hyp_doc}"
@@ -475,18 +502,7 @@ def hybrid_retrieve(query: str, llm: ChatGoogleGenerativeAI) -> list[Document]:
     else:
         candidates = semantic_retriever.invoke(retrieval_query)
 
-    # CrossEncoder Re-Ranking
-    try:
-        cross_encoder = HuggingFaceCrossEncoder(model_name="cross-encoder/ms-marco-MiniLM-L-6-v2")
-        compressor     = CrossEncoderReranker(model=cross_encoder, top_n=TOP_K_FINAL)
-        compression_retriever = ContextualCompressionRetriever(
-            base_compressor=compressor,
-            base_retriever=semantic_retriever,
-        )
-        reranked = compressor.compress_documents(candidates, query)
-        return reranked[:TOP_K_FINAL]
-    except Exception:
-        return candidates[:TOP_K_FINAL]
+    return gemini_rerank(query, candidates, llm)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # WEB SEARCH (Serper)
