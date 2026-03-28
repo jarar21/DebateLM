@@ -223,7 +223,6 @@ section[data-testid="stSidebar"] .stButton > button:hover {
 </style>
 """, unsafe_allow_html=True)
 
-# ═══════════════════════════════════════════════════════════════════════════
 # USER ISOLATION
 # ═══════════════════════════════════════════════════════════════════════════
 def get_user_id() -> str:
