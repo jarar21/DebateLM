@@ -1,13 +1,36 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
+    <meta charset="UTF-8">
+    <!-- This meta tag is strictly required for mobile responsiveness -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    
     <title>DebateLM</title>
     <style>
-      body, html { margin: 0; padding: 0; height: 100%; overflow: hidden; }
-      iframe { width: 100%; height: 100%; border: none; }
+      /* Reset margins and paddings, and ensure the body takes exactly 100% of the screen */
+      html, body { 
+        margin: 0; 
+        padding: 0; 
+        width: 100vw; 
+        height: 100vh; 
+        overflow: hidden; 
+        background-color: #ffffff; /* Optional: prevents flashing before load */
+      }
+      
+      /* Make the iframe take up the entire viewport */
+      iframe { 
+        width: 100%; 
+        height: 100%; 
+        border: none; 
+        display: block; /* Removes default inline spacing underneath iframes */
+      }
     </style>
   </head>
   <body>
-    <iframe src="https://debatelm-7fx4kdeawcr7svhtpiybvh.streamlit.app/?embedded=true"></iframe>
+    <iframe 
+      src="https://debatelm-7fx4kdeawcr7svhtpiybvh.streamlit.app/?embedded=true" 
+      allowfullscreen 
+      sandbox="allow-scripts allow-same-origin allow-popups allow-forms">
+    </iframe>
   </body>
 </html>
