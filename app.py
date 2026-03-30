@@ -2,6 +2,7 @@ import streamlit as st
 import os, json, datetime, uuid, hashlib, time, re
 from dotenv import load_dotenv
 
+from streamlit_cookies_manager import EncryptedCookieManager
 from supabase import create_client, Client
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
@@ -91,43 +92,33 @@ footer, .stDeployButton { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. THE FRICTIONLESS GUEST PASS SYSTEM (DEVICE FINGERPRINTING) ---
+# --- 1. THE FRICTIONLESS GUEST PASS SYSTEM (REAL BROWSER COOKIES) ---
+
+# Initialize the Cookie Manager
+cookies = EncryptedCookieManager(
+    prefix="debatelm",
+    # Encrypts the cookie so tech-savvy users cannot manually change their ID
+    password=get_secret("SUPABASE_KEY")[:32] if get_secret("SUPABASE_KEY") else "fallback_secure_password_123!"
+)
+
+# CRITICAL: Streamlit must wait a split-second for the browser to send its cookies to Python
+if not cookies.ready():
+    st.stop()
+
 def get_guest_id() -> str:
-    # STEP 1: If an ID is already locked in memory, DO NOT recalculate! 
-    # (This fixes the WebSocket bug when clicking buttons)
-    if "guest_id" in st.session_state:
-        st.query_params["uid"] = st.session_state.guest_id # Keep URL alive
-        return st.session_state.guest_id
+    # STEP 1: Check if the user already has a permanent cookie in their browser
+    cookie_val = cookies.get("guest_id")
+    if cookie_val:
+        return cookie_val
         
-    # STEP 2: If they refreshed the page, grab the ID from the URL
-    if "uid" in st.query_params:
-        st.session_state.guest_id = st.query_params["uid"]
-        return st.session_state.guest_id
-        
-    # STEP 3: Brand new visit? Create the device fingerprint.
-    try:
-        # Grab the user's IP address and Browser info
-        ip = st.context.headers.get("X-Forwarded-For", "")
-        user_agent = st.context.headers.get("User-Agent", "")
-        
-        if ip and user_agent:
-            # Use only the true client IP (ignoring Cloudflare/Streamlit proxy IPs)
-            client_ip = ip.split(',')[0].strip()
-            fingerprint = f"{client_ip}-{user_agent}"
-            uid = "guest_" + hashlib.sha256(fingerprint.encode()).hexdigest()[:16]
-            
-            # Save it everywhere
-            st.session_state.guest_id = uid
-            st.query_params["uid"] = uid
-            return uid
-    except Exception:
-        pass
-        
-    # STEP 4: Absolute fallback if strict privacy blockers block headers
-    uid = "guest_" + str(uuid.uuid4()).replace("-", "")[:16]
-    st.session_state.guest_id = uid
-    st.query_params["uid"] = uid
-    return uid
+    # STEP 2: Brand new visitor! Generate a permanent UUID
+    new_id = "guest_" + str(uuid.uuid4()).replace("-", "")[:16]
+    
+    # Save it physically into their browser cache
+    cookies["guest_id"] = new_id
+    cookies.save()
+    
+    return new_id
 
 guest_id = get_guest_id()
 

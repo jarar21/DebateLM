@@ -1,4 +1,5 @@
 streamlit
+streamlit-cookies-manager
 python-dotenv
 langchain
 langchain-core
