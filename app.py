@@ -91,17 +91,33 @@ footer, .stDeployButton { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. THE FRICTIONLESS GUEST PASS SYSTEM ---
+# --- 1. THE FRICTIONLESS GUEST PASS SYSTEM (DEVICE FINGERPRINTING) ---
 def get_guest_id() -> str:
-    # Check if they already have a guest ID in this session
+    # Step 1: Create a permanent Device Fingerprint (Survives page reloads & closed tabs!)
+    try:
+        # Grab the user's IP address and Browser info from Streamlit's headers
+        ip = st.context.headers.get("X-Forwarded-For", "")
+        user_agent = st.context.headers.get("User-Agent", "")
+        
+        if ip and user_agent:
+            # Hash them together to create a secure, permanent ID for this device
+            fingerprint = f"{ip.split(',')[0].strip()}-{user_agent}"
+            guest_hash = "guest_" + hashlib.sha256(fingerprint.encode()).hexdigest()[:16]
+            
+            # Keep the URL clean but trackable
+            st.query_params["uid"] = guest_hash
+            st.session_state.guest_id = guest_hash
+            return guest_hash
+    except Exception:
+        pass
+        
+    # Step 2: Fallback (Used if you are testing locally on your own computer)
     if "guest_id" in st.session_state:
         return st.session_state.guest_id
         
-    # Check if they have a URL parameter (Persistent Guest Pass)
     if "uid" in st.query_params:
         uid = st.query_params["uid"]
     else:
-        # Generate a new permanent guest ID
         uid = "guest_" + str(uuid.uuid4()).replace("-", "")[:16]
         st.query_params["uid"] = uid
         
