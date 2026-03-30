@@ -27,10 +27,25 @@
     </style>
   </head>
   <body>
-    <iframe 
-      src="https://debatelm.streamlit.app//?embedded=true" 
-      allowfullscreen 
-      sandbox="allow-scripts allow-same-origin allow-popups allow-forms">
-    </iframe>
+    <script>
+      // Generate or retrieve the permanent Guest ID
+      let guestId = localStorage.getItem("debatelm_guest_id");
+      if (!guestId) {
+        guestId = "guest_" + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+        localStorage.setItem("debatelm_guest_id", guestId);
+      }
+
+      // Create your exact iframe and inject the ID into your URL
+      const iframe = document.createElement("iframe");
+      
+      // Kept your exact URL and appended the uid parameter
+      iframe.src = "https://debatelm.streamlit.app//?embedded=true&uid=" + guestId;
+      
+      // Kept your exact attributes
+      iframe.setAttribute("allowfullscreen", "");
+      iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-popups allow-forms");
+      
+      document.body.appendChild(iframe);
+    </script>
   </body>
 </html>
