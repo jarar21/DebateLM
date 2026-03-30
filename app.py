@@ -93,35 +93,40 @@ footer, .stDeployButton { display: none !important; }
 
 # --- 1. THE FRICTIONLESS GUEST PASS SYSTEM (DEVICE FINGERPRINTING) ---
 def get_guest_id() -> str:
-    # Step 1: Create a permanent Device Fingerprint (Survives page reloads & closed tabs!)
+    # STEP 1: If an ID is already locked in memory, DO NOT recalculate! 
+    # (This fixes the WebSocket bug when clicking buttons)
+    if "guest_id" in st.session_state:
+        st.query_params["uid"] = st.session_state.guest_id # Keep URL alive
+        return st.session_state.guest_id
+        
+    # STEP 2: If they refreshed the page, grab the ID from the URL
+    if "uid" in st.query_params:
+        st.session_state.guest_id = st.query_params["uid"]
+        return st.session_state.guest_id
+        
+    # STEP 3: Brand new visit? Create the device fingerprint.
     try:
-        # Grab the user's IP address and Browser info from Streamlit's headers
+        # Grab the user's IP address and Browser info
         ip = st.context.headers.get("X-Forwarded-For", "")
         user_agent = st.context.headers.get("User-Agent", "")
         
         if ip and user_agent:
-            # Hash them together to create a secure, permanent ID for this device
-            fingerprint = f"{ip.split(',')[0].strip()}-{user_agent}"
-            guest_hash = "guest_" + hashlib.sha256(fingerprint.encode()).hexdigest()[:16]
+            # Use only the true client IP (ignoring Cloudflare/Streamlit proxy IPs)
+            client_ip = ip.split(',')[0].strip()
+            fingerprint = f"{client_ip}-{user_agent}"
+            uid = "guest_" + hashlib.sha256(fingerprint.encode()).hexdigest()[:16]
             
-            # Keep the URL clean but trackable
-            st.query_params["uid"] = guest_hash
-            st.session_state.guest_id = guest_hash
-            return guest_hash
+            # Save it everywhere
+            st.session_state.guest_id = uid
+            st.query_params["uid"] = uid
+            return uid
     except Exception:
         pass
         
-    # Step 2: Fallback (Used if you are testing locally on your own computer)
-    if "guest_id" in st.session_state:
-        return st.session_state.guest_id
-        
-    if "uid" in st.query_params:
-        uid = st.query_params["uid"]
-    else:
-        uid = "guest_" + str(uuid.uuid4()).replace("-", "")[:16]
-        st.query_params["uid"] = uid
-        
+    # STEP 4: Absolute fallback if strict privacy blockers block headers
+    uid = "guest_" + str(uuid.uuid4()).replace("-", "")[:16]
     st.session_state.guest_id = uid
+    st.query_params["uid"] = uid
     return uid
 
 guest_id = get_guest_id()
