@@ -6,29 +6,39 @@
     <title>DebateLM</title>
     <style>
       /* Dark background prevents white flash during loading */
-      html, body { margin: 0; padding: 0; width: 100vw; height: 100vh; overflow: hidden; background-color: #121212; }
-      iframe { width: 100%; height: 100%; border: none; display: block; }
+      html, body { 
+        margin: 0; 
+        padding: 0; 
+        width: 100vw; 
+        height: 100vh; 
+        overflow: hidden; /* Hides anything that bleeds off the screen */
+        background-color: #121212; 
+      }
+      
+      /* THE MAGIC HACK: We make the iframe 55px taller than the screen! 
+         This pushes the "Built with Streamlit" footer below the visible monitor line */
+      iframe { 
+        width: 100%; 
+        height: calc(100vh + 55px); 
+        border: none; 
+        display: block; 
+      }
     </style>
   </head>
   <body>
     <script>
-      // 1. Check if the user already has a guest ID saved on debatelm.com
       let guestId = localStorage.getItem("debatelm_guest_id");
       
-      // 2. If they are a new visitor, generate a permanent ID
       if (!guestId) {
-        // Generates a random string like "guest_x7f9..."
         guestId = "guest_" + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
         localStorage.setItem("debatelm_guest_id", guestId);
       }
       
-      // 3. Dynamically create the Streamlit iframe and inject the Guest ID!
       const iframe = document.createElement("iframe");
       
-      // We pass the guestId securely into the Streamlit URL
-      iframe.src = "https://debatelm.streamlit.app/?embed=true&uid=" + guestId;
+      // We added "&embed_options=dark_theme" to fix the white flash!
+      iframe.src = "https://debatelm.streamlit.app/?embed=true&embed_options=dark_theme&uid=" + guestId;
       
-      // Security and formatting tags
       iframe.setAttribute("allowfullscreen", "");
       iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-popups allow-forms allow-downloads");
       
