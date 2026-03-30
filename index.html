@@ -5,21 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>DebateLM</title>
     <style>
-      /* Dark background prevents white flash during loading */
+      /* Clean, native fullscreen styling */
       html, body { 
         margin: 0; 
         padding: 0; 
         width: 100vw; 
         height: 100vh; 
-        overflow: hidden; /* Hides anything that bleeds off the screen */
+        overflow: hidden; 
         background-color: #121212; 
       }
       
-      /* THE MAGIC HACK: We make the iframe 55px taller than the screen! 
-         This pushes the "Built with Streamlit" footer below the visible monitor line */
+      /* Perfect 100% fit, no clipping hacks needed */
       iframe { 
         width: 100%; 
-        height: calc(100vh + 55px); 
+        height: 100%; 
         border: none; 
         display: block; 
       }
@@ -27,8 +26,10 @@
   </head>
   <body>
     <script>
+      // 1. Check if the user already has a guest ID saved on debatelm.com
       let guestId = localStorage.getItem("debatelm_guest_id");
       
+      // 2. If they are a new visitor, generate a permanent ID
       if (!guestId) {
         guestId = "guest_" + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
         localStorage.setItem("debatelm_guest_id", guestId);
@@ -36,9 +37,11 @@
       
       const iframe = document.createElement("iframe");
       
-      // We added "&embed_options=dark_theme" to fix the white flash!
-      iframe.src = "https://debatelm.streamlit.app/?embed=true&embed_options=dark_theme&uid=" + guestId;
+      // THE FIX: Removed "?embed=true". 
+      // This restores the top-right Streamlit header menu AND removes the white footer!
+      iframe.src = "https://debatelm.streamlit.app/?uid=" + guestId;
       
+      // Security and formatting tags
       iframe.setAttribute("allowfullscreen", "");
       iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-popups allow-forms allow-downloads");
       
