@@ -2,7 +2,6 @@ import streamlit as st
 import os, json, datetime, uuid, hashlib, time, re
 from dotenv import load_dotenv
 
-from streamlit_cookies_manager import EncryptedCookieManager
 from supabase import create_client, Client
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
@@ -92,33 +91,21 @@ footer, .stDeployButton { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. THE FRICTIONLESS GUEST PASS SYSTEM (REAL BROWSER COOKIES) ---
-
-# Initialize the Cookie Manager
-cookies = EncryptedCookieManager(
-    prefix="debatelm",
-    # Encrypts the cookie so tech-savvy users cannot manually change their ID
-    password=get_secret("SUPABASE_KEY")[:32] if get_secret("SUPABASE_KEY") else "fallback_secure_password_123!"
-)
-
-# CRITICAL: Streamlit must wait a split-second for the browser to send its cookies to Python
-if not cookies.ready():
-    st.stop()
-
+# --- 1. THE FRICTIONLESS GUEST PASS SYSTEM (DRIVEN BY GITHUB PAGES) ---
 def get_guest_id() -> str:
-    # STEP 1: Check if the user already has a permanent cookie in their browser
-    cookie_val = cookies.get("guest_id")
-    if cookie_val:
-        return cookie_val
+    # 1. Grab the ID that your HTML iframe injected into the URL
+    if "uid" in st.query_params:
+        uid = st.query_params["uid"]
+        st.session_state.guest_id = uid
+        return uid
         
-    # STEP 2: Brand new visitor! Generate a permanent UUID
-    new_id = "guest_" + str(uuid.uuid4()).replace("-", "")[:16]
-    
-    # Save it physically into their browser cache
-    cookies["guest_id"] = new_id
-    cookies.save()
-    
-    return new_id
+    # 2. Safety fallback (Just in case)
+    if "guest_id" in st.session_state:
+        return st.session_state.guest_id
+        
+    uid = "guest_" + str(uuid.uuid4()).replace("-", "")[:16]
+    st.session_state.guest_id = uid
+    return uid
 
 guest_id = get_guest_id()
 
