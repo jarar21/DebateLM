@@ -5,7 +5,8 @@ langchain-core
 langchain-community
 langchain-google-genai
 langchain-text-splitters
-langchain-chroma
+langchain-pinecone
+pinecone-client
+supabase
 requests
 pypdf
-rank_bm25
