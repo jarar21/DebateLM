@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>DebateLM</title>
     <style>
-      /* Clean, native fullscreen styling */
       html, body { 
         margin: 0; 
         padding: 0; 
@@ -15,7 +14,6 @@
         background-color: #121212; 
       }
       
-      /* Perfect 100% fit, no clipping hacks needed */
       iframe { 
         width: 100%; 
         height: 100%; 
@@ -26,10 +24,8 @@
   </head>
   <body>
     <script>
-      // 1. Check if the user already has a guest ID saved on debatelm.com
       let guestId = localStorage.getItem("debatelm_guest_id");
       
-      // 2. If they are a new visitor, generate a permanent ID
       if (!guestId) {
         guestId = "guest_" + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
         localStorage.setItem("debatelm_guest_id", guestId);
@@ -37,11 +33,10 @@
       
       const iframe = document.createElement("iframe");
       
-      // THE FIX: Removed "?embed=true". 
-      // This restores the top-right Streamlit header menu AND removes the white footer!
-      iframe.src = "https://debatelm.streamlit.app/?uid=" + guestId;
+      // THE FIX: We put embed=true back to stop the crash, 
+      // but added "show_toolbar" to bring back the top-right menu!
+      iframe.src = "https://debatelm.streamlit.app/?embed=true&embed_options=show_toolbar,dark_theme&uid=" + guestId;
       
-      // Security and formatting tags
       iframe.setAttribute("allowfullscreen", "");
       iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-popups allow-forms allow-downloads");
       
