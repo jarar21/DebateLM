@@ -32,211 +32,90 @@ TOP_K_FINAL          = 8
 
 st.set_page_config(page_title="DebateLM", page_icon="⚖", layout="wide", initial_sidebar_state="expanded")
 
-# Initialize theme state
-if "theme_choice" not in st.session_state:
-    st.session_state.theme_choice = "Device"
-
-# Define Theme Variables
-DARK_VARS = """
-    --ink:        #000000;
-    --ink-2:      #121212;
-    --ink-3:      #1A1A1A;
-    --ink-4:      #2D2D2D;
-    --wire:       #333333;
-    --wire-2:     #4A4A4A;
-    --dim:        #888888;
-    --muted:      #B3B3B3;
-    --brass:      #5C6DFF;
-    --brass-lt:   #828FFF;
-    --brass-dim:  #30368A;
-    --ice:        #00D2FF;
-    --ice-lt:     #5EE0FF;
-    --crimson:    #FF2A55;
-    --sage:       #00E676;
-    --lavender:   #B85CFF;
-    --text:       #FFFFFF;
-    --text-2:     #EAEAEA;
-    --text-3:     #CCCCCC;
-"""
-
-LIGHT_VARS = """
-    --ink:        #FFFFFF;
-    --ink-2:      #F5F7FA;
-    --ink-3:      #EAECEF;
-    --ink-4:      #DFE3E7;
-    --wire:       #D1D5DB;
-    --wire-2:     #9CA3AF;
-    --dim:        #6B7280;
-    --muted:      #4B5563;
-    --brass:      #4338CA;
-    --brass-lt:   #4F46E5;
-    --brass-dim:  #C7D2FE;
-    --ice:        #0284C7;
-    --ice-lt:     #0EA5E9;
-    --crimson:    #E11D48;
-    --sage:       #059669;
-    --lavender:   #9333EA;
-    --text:       #000000;
-    --text-2:     #1F2937;
-    --text-3:     #374151;
-"""
-
-if st.session_state.theme_choice == "Dark":
-    root_css = f":root {{ {DARK_VARS} }}"
-elif st.session_state.theme_choice == "Light":
-    root_css = f":root {{ {LIGHT_VARS} }}"
-else:
-    root_css = f"""
-    @media (prefers-color-scheme: dark) {{ :root {{ {DARK_VARS} }} }}
-    @media (prefers-color-scheme: light) {{ :root {{ {LIGHT_VARS} }} }}
-    """
-
-st.markdown(f"""
+# Cleaned-up CSS that uses native Streamlit CSS variables 
+# var(--primary-color), var(--background-color), var(--secondary-background-color), var(--text-color)
+st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
-{root_css}
+*, *::before, *::after { box-sizing: border-box; }
+footer, .stDeployButton { display: none !important; }
+.block-container { padding: 3rem 2rem 4rem 2rem !important; max-width: 1400px !important; }
 
-*, *::before, *::after {{ box-sizing: border-box; }}
-html, body,[class*="css"], .stApp {{ font-family: 'Inter', sans-serif; background: var(--ink) !important; color: var(--text); -webkit-font-smoothing: antialiased; }}
-.stApp {{ background: var(--ink) !important; }}
-footer, .stDeployButton {{ display: none !important; }}
-.block-container {{ padding: 3rem 2rem 4rem 2rem !important; max-width: 1400px !important; }}
+/* Custom Layout Classes inheriting Streamlit Native Colors */
+.masthead { display:flex; align-items:flex-end; justify-content:space-between; padding:2.2rem 0 1.4rem 0; border-bottom:1px solid var(--secondary-background-color); margin-bottom:2rem; }
+.masthead-wordmark { font-family:'Inter', sans-serif; font-size:2.4rem; font-weight:800; color:var(--text-color); letter-spacing:-0.03em; line-height:1; }
+.masthead-tagline { font-family:'Inter', sans-serif; font-size:0.85rem; color:var(--text-color); opacity:0.7; font-weight: 500; margin-top: 0.5rem; }
+.masthead-right { display:flex; gap:2.5rem; align-items:flex-end; padding-bottom:0.1rem; }
+.masthead-stat-val { font-family:'Inter', sans-serif; font-size:1.4rem; font-weight:700; color:var(--text-color); line-height:1; text-align:right; }
+.masthead-stat-lbl { font-family:'Inter', sans-serif; font-size:0.75rem; color:var(--text-color); opacity:0.7; font-weight: 500; margin-top:0.3rem; text-align:right; text-transform:uppercase; letter-spacing:0.05em; }
 
-section[data-testid="stSidebar"] {{ background: var(--ink-2) !important; border-right: 1px solid var(--wire) !important; }}
-section[data-testid="stSidebar"] .stButton > button {{ background: transparent !important; border: 1px solid var(--wire-2) !important; color: var(--text-2) !important; border-radius: 4px !important; font-family: 'Inter', sans-serif !important; font-size: 0.78rem !important; font-weight: 600 !important; letter-spacing: 0.02em !important; padding: 0.55rem 0.8rem !important; width: 100% !important; transition: all 0.15s !important; box-shadow: none !important; }}
-section[data-testid="stSidebar"] .stButton > button:hover {{ border-color: var(--brass) !important; color: var(--brass-lt) !important; background: rgba(99,102,241,0.05) !important; }}
-section[data-testid="stSidebar"] .stButton > button[kind="primary"] {{ background: var(--brass) !important; border-color: var(--brass) !important; color: var(--text) !important; font-weight: 700 !important; }}
-section[data-testid="stSidebar"] .stButton > button[kind="primary"]:hover {{ background: var(--brass-lt) !important; }}
+.section-hd { display:flex; align-items:center; gap:1rem; margin:0.5rem 0 1.2rem 0; }
+.section-hd-num { font-family:'Inter', sans-serif; font-size:2rem; font-weight:800; color:var(--secondary-background-color); line-height:1; min-width:2rem; filter: brightness(0.8); }
+.section-hd-title { font-family:'Inter', sans-serif; font-size:0.85rem; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; color:var(--text-color); }
+.section-hd-desc { font-family:'Inter', sans-serif; font-size:0.8rem; color:var(--text-color); opacity:0.7; font-weight: 500; margin-top:0.15rem; }
 
-.stButton > button[kind="primary"] {{ background: var(--brass) !important; border: none !important; color: #FFFFFF !important; border-radius: 4px !important; font-family: 'Inter', sans-serif !important; font-size: 0.85rem !important; font-weight: 700 !important; letter-spacing: 0.05em !important; padding: 0.75rem 2.5rem !important; transition: background 0.15s !important; }}
-.stButton > button[kind="primary"]:hover {{ background: var(--brass-lt) !important; }}
-.stButton > button[kind="primary"]:disabled {{ background: var(--wire-2) !important; color: var(--dim) !important; }}
-.stButton > button[kind="secondary"] {{ background: transparent !important; border: 1px solid var(--wire-2) !important; color: var(--text-2) !important; border-radius: 4px !important; font-family: 'Inter', sans-serif !important; font-size: 0.78rem !important; font-weight: 500 !important; transition: all 0.15s !important; }}
-.stButton > button[kind="secondary"]:hover {{ border-color: var(--brass-dim) !important; color: var(--brass-lt) !important; }}
+.agent-card { border:1px solid var(--secondary-background-color); background:var(--secondary-background-color); padding:0.8rem 1rem; border-radius: 4px; position:relative; margin-bottom:0.5rem; }
+.agent-card::before { content:''; position:absolute; top:0; left:0; width:4px; border-radius: 4px 0 0 4px; height:100%; }
+.agent-id { font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 700; letter-spacing:0.05em; text-transform:uppercase; }
 
-.stSlider > div > div > div {{ background: var(--wire-2) !important; }}
-.stSlider > div > div > div > div {{ background: var(--brass) !important; }}
+.round-divider { display:flex; align-items:center; gap:1.2rem; margin:2.5rem 0 1.5rem 0; }
+.round-divider-line { flex:1; height:1px; background:var(--secondary-background-color); }
+.round-divider-label { font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 600; color:var(--text-color); opacity:0.7; text-transform:uppercase; letter-spacing:0.1em; white-space:nowrap; text-align: center; }
 
-.stSelectbox > div > div {{ background: var(--ink-3) !important; border: 1px solid var(--wire-2) !important; border-radius: 4px !important; color: var(--text) !important; font-family: 'Inter', sans-serif !important; font-size: 0.82rem !important; }}
-.stSelectbox > div > div:focus-within {{ border-color: var(--brass-dim) !important; box-shadow: none !important; }}
+.arg-card { border:1px solid var(--secondary-background-color); background:var(--background-color); border-radius: 6px; margin-bottom:1.2rem; position:relative; overflow:hidden; }
+.arg-card-accent { position:absolute; top:0; left:0; width:4px; height:100%; }
+.arg-card-header { display:flex; align-items:center; justify-content:space-between; padding:0.75rem 1.2rem; border-bottom:1px solid var(--secondary-background-color); background:var(--secondary-background-color); }
+.arg-card-speaker { font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 700; letter-spacing:0.05em; text-transform:uppercase; }
+.arg-card-model { font-family:'Inter', sans-serif; font-size:0.7rem; color:var(--text-color); opacity:0.7; font-weight: 500; }
+.arg-card-body { padding:1.2rem 1.4rem; font-family:'Inter', sans-serif; font-size:0.95rem; line-height:1.6; color:var(--text-color); word-wrap: break-word; }
+.arg-card-query { padding:0.6rem 1.4rem; font-family:'Inter', sans-serif; font-size:0.75rem; color:var(--text-color); opacity:0.7; border-top:1px dashed var(--secondary-background-color); background:var(--secondary-background-color); word-wrap: break-word; }
 
-.stTextArea textarea, .stTextInput input {{ background: var(--ink-3) !important; border: 1px solid var(--wire-2) !important; border-radius: 4px !important; color: var(--text) !important; font-family: 'Inter', sans-serif !important; font-size: 0.88rem !important; }}
-.stTextArea textarea:focus, .stTextInput input:focus {{ border-color: var(--brass-dim) !important; box-shadow: none !important; }}
-.stTextArea textarea::placeholder {{ color: var(--dim) !important; }}
+.verdict-card { border:1px solid var(--primary-color); border-radius: 6px; background:var(--secondary-background-color); margin-top:1.5rem; position:relative; overflow:hidden; }
+.verdict-header { display:flex; align-items:center; justify-content:space-between; padding:0.85rem 1.4rem; border-bottom:1px solid var(--primary-color); background:var(--background-color); }
+.verdict-title { font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 700; letter-spacing:0.05em; text-transform:uppercase; color:var(--primary-color); }
+.verdict-model { font-family:'Inter', sans-serif; font-size:0.7rem; font-weight: 500; color:var(--primary-color); opacity: 0.8; }
+.verdict-body { padding:1.5rem; font-family:'Inter', sans-serif; font-size:0.95rem; line-height:1.6; color:var(--text-color); word-wrap: break-word; }
 
-.stRadio label {{ color: var(--text-2) !important; font-size: 0.82rem !important; font-weight: 500 !important; }}
-.stToggle > label > div {{ background: var(--wire-2) !important; }}
-.stToggle[aria-checked="true"] > div {{ background: var(--brass) !important; }}[data-testid="stFileUploader"] {{ border: 1px dashed var(--wire-2) !important; border-radius: 4px !important; background: var(--ink-3) !important; padding: 0.8rem !important; }}
-[data-testid="stFileUploader"]:hover {{ border-color: var(--brass-dim) !important; }}
+.sb-logo { font-family:'Inter', sans-serif; font-size:1.2rem; font-weight:800; color:var(--text-color); letter-spacing:-0.02em; padding:1.4rem 1.2rem 0.2rem 1.2rem; border-bottom:none; }
+.sb-logo-sub { font-family:'Inter', sans-serif; font-size:0.7rem; font-weight: 500; color:var(--text-color); opacity:0.7; padding:0.2rem 1.2rem 0.8rem 1.2rem; border-bottom:1px solid var(--secondary-background-color); }
+.sb-section { padding:1rem 1.2rem; border-bottom:1px solid var(--secondary-background-color); }
+.sb-label { font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 700; text-transform:uppercase; color:var(--text-color); opacity:0.7; margin-bottom:0.8rem; letter-spacing:0.02em; }
 
-.stProgress > div > div {{ background: var(--wire) !important; border-radius: 4px !important; }}
-.stProgress > div > div > div {{ background: var(--brass) !important; border-radius: 4px !important; }}
+.quota-row { padding:0.8rem 1.2rem; border-bottom:1px solid var(--secondary-background-color); }
+.quota-label { display:flex; justify-content:space-between; font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 600; color:var(--text-color); opacity:0.7; margin-bottom:0.5rem; }
+.quota-track { height:4px; background:var(--secondary-background-color); filter: brightness(0.9); border-radius: 2px; overflow: hidden; }
+.quota-fill { height:100%; background:var(--primary-color); }
 
-.stExpander {{ border: 1px solid var(--wire) !important; border-radius: 4px !important; background: var(--ink-2) !important; }}
-.stExpander summary {{ color: var(--text-2) !important; font-family: 'Inter', sans-serif !important; font-size: 0.82rem !important; font-weight: 600 !important; }}
-.stExpander summary:hover {{ color: var(--brass-lt) !important; }}
+.api-status { display:flex; gap:0.5rem; padding:0.7rem 1.2rem; border-bottom:1px solid var(--secondary-background-color); flex-wrap: wrap; }
+.api-pill { display:flex; align-items:center; gap:0.4rem; font-family:'Inter', sans-serif; font-size:0.7rem; font-weight: 600; padding:0.25rem 0.6rem; border:1px solid var(--secondary-background-color); border-radius: 4px; }
+.api-pill.on { border-color:#059669; color:#059669; background: rgba(16, 185, 129, 0.05); }
+.api-pill.off { border-color:var(--secondary-background-color); color:var(--text-color); opacity:0.5; }
+.api-dot { width:6px; height:6px; border-radius:50%; }
+.api-pill.on .api-dot { background:#059669; }
+.api-pill.off .api-dot { background:var(--text-color); opacity:0.5; }
 
-.stTabs[data-baseweb="tab-list"] {{ background: transparent !important; border-bottom: 1px solid var(--wire) !important; gap: 0 !important; }}
-.stTabs[data-baseweb="tab"] {{ background: transparent !important; border: none !important; border-bottom: 2px solid transparent !important; border-radius: 0 !important; color: var(--muted) !important; font-family: 'Inter', sans-serif !important; font-size: 0.78rem !important; font-weight: 600 !important; padding: 0.7rem 1.4rem !important; transition: all 0.15s !important; }}
-.stTabs[aria-selected="true"] {{ color: var(--text) !important; border-bottom-color: var(--brass) !important; }}
-.stTabs [data-baseweb="tab-panel"] {{ padding: 1.5rem 0 0 0 !important; }}[data-testid="stChatMessage"] {{ background: var(--ink-2) !important; border: 1px solid var(--wire) !important; border-radius: 6px !important; }}
-.stChatInputContainer {{ border: 1px solid var(--wire-2) !important; border-radius: 6px !important; background: var(--ink-3) !important; }}
-.stChatInputContainer textarea {{ border: none !important; background: transparent !important; }}
-
-.stAlert {{ border-radius: 4px !important; border-left-width: 3px !important; font-family: 'Inter', sans-serif !important; font-size: 0.85rem !important; background: var(--ink-3) !important; color: var(--text) !important; }}
-[data-testid="stStatus"] {{ background: var(--ink-2) !important; border: 1px solid var(--wire) !important; border-radius: 6px !important; font-family: 'Inter', sans-serif !important; font-size: 0.85rem !important; font-weight: 500 !important; }}
-.stSpinner > div {{ border-top-color: var(--brass) !important; }}
-hr {{ border-color: var(--wire) !important; margin: 1.5rem 0 !important; }}
-
-label, .stLabel {{ color: var(--text-2) !important; font-size: 0.82rem !important; font-weight: 600 !important; }}
-.stCaption,[data-testid="stCaptionContainer"] {{ color: var(--dim) !important; font-size: 0.78rem !important; font-family: 'Inter', sans-serif !important; }}
-p {{ color: var(--text) !important; line-height: 1.6 !important; }}
-h1, h2, h3 {{ font-family: 'Inter', sans-serif !important; font-weight: 700 !important; color: var(--text) !important; }}[data-testid="stVerticalBlockBorderWrapper"] > div > div {{ border: 1px solid var(--wire) !important; border-radius: 6px !important; background: var(--ink-2) !important; }}
-
-::-webkit-scrollbar {{ width: 6px; height: 6px; }}
-::-webkit-scrollbar-track {{ background: var(--ink); }}
-::-webkit-scrollbar-thumb {{ background: var(--wire-2); border-radius: 4px; }}
-::-webkit-scrollbar-thumb:hover {{ background: var(--dim); }}
-
-.masthead {{ display:flex; align-items:flex-end; justify-content:space-between; padding:2.2rem 0 1.4rem 0; border-bottom:1px solid var(--wire); margin-bottom:2rem; }}
-.masthead-wordmark {{ font-family:'Inter', sans-serif; font-size:2.4rem; font-weight:800; color:var(--text); letter-spacing:-0.03em; line-height:1; }}
-.masthead-tagline {{ font-family:'Inter', sans-serif; font-size:0.85rem; color:var(--muted); font-weight: 500; margin-top: 0.5rem; }}
-.masthead-right {{ display:flex; gap:2.5rem; align-items:flex-end; padding-bottom:0.1rem; }}
-.masthead-stat-val {{ font-family:'Inter', sans-serif; font-size:1.4rem; font-weight:700; color:var(--text); line-height:1; text-align:right; }}
-.masthead-stat-lbl {{ font-family:'Inter', sans-serif; font-size:0.75rem; color:var(--muted); font-weight: 500; margin-top:0.3rem; text-align:right; text-transform:uppercase; letter-spacing:0.05em; }}
-
-.section-hd {{ display:flex; align-items:center; gap:1rem; margin:0.5rem 0 1.2rem 0; }}
-.section-hd-num {{ font-family:'Inter', sans-serif; font-size:2rem; font-weight:800; color:var(--wire-2); line-height:1; min-width:2rem; }}
-.section-hd-title {{ font-family:'Inter', sans-serif; font-size:0.85rem; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; color:var(--text-2); }}
-.section-hd-desc {{ font-family:'Inter', sans-serif; font-size:0.8rem; color:var(--dim); font-weight: 500; margin-top:0.15rem; }}
-
-.agent-card {{ border:1px solid var(--wire); background:var(--ink-2); padding:0.8rem 1rem; border-radius: 4px; position:relative; margin-bottom:0.5rem; }}
-.agent-card::before {{ content:''; position:absolute; top:0; left:0; width:4px; border-radius: 4px 0 0 4px; height:100%; }}
-.agent-id {{ font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 700; letter-spacing:0.05em; text-transform:uppercase; }}
-
-.round-divider {{ display:flex; align-items:center; gap:1.2rem; margin:2.5rem 0 1.5rem 0; }}
-.round-divider-line {{ flex:1; height:1px; background:var(--wire); }}
-.round-divider-label {{ font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 600; color:var(--muted); text-transform:uppercase; letter-spacing:0.1em; white-space:nowrap; text-align: center; }}
-
-.arg-card {{ border:1px solid var(--wire); background:var(--ink-2); border-radius: 6px; margin-bottom:1.2rem; position:relative; overflow:hidden; }}
-.arg-card-accent {{ position:absolute; top:0; left:0; width:4px; height:100%; }}
-.arg-card-header {{ display:flex; align-items:center; justify-content:space-between; padding:0.75rem 1.2rem; border-bottom:1px solid var(--wire); background:var(--ink-3); }}
-.arg-card-speaker {{ font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 700; letter-spacing:0.05em; text-transform:uppercase; }}
-.arg-card-model {{ font-family:'Inter', sans-serif; font-size:0.7rem; color:var(--dim); font-weight: 500; }}
-.arg-card-body {{ padding:1.2rem 1.4rem; font-family:'Inter', sans-serif; font-size:0.95rem; line-height:1.6; color:var(--text); word-wrap: break-word; }}
-.arg-card-query {{ padding:0.6rem 1.4rem; font-family:'Inter', sans-serif; font-size:0.75rem; color:var(--dim); border-top:1px dashed var(--wire); background:var(--ink-3); word-wrap: break-word; }}
-
-.verdict-card {{ border:1px solid var(--brass-dim); border-radius: 6px; background:linear-gradient(160deg,rgba(99,102,241,0.04) 0%,var(--ink-2) 60%); margin-top:1.5rem; position:relative; overflow:hidden; }}
-.verdict-header {{ display:flex; align-items:center; justify-content:space-between; padding:0.85rem 1.4rem; border-bottom:1px solid var(--brass-dim); background:rgba(99,102,241,0.06); }}
-.verdict-title {{ font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 700; letter-spacing:0.05em; text-transform:uppercase; color:var(--brass-lt); }}
-.verdict-model {{ font-family:'Inter', sans-serif; font-size:0.7rem; font-weight: 500; color:var(--brass-lt); opacity: 0.8; }}
-.verdict-body {{ padding:1.5rem; font-family:'Inter', sans-serif; font-size:0.95rem; line-height:1.6; color:var(--text); word-wrap: break-word; }}
-
-.sb-logo {{ font-family:'Inter', sans-serif; font-size:1.2rem; font-weight:800; color:var(--text); letter-spacing:-0.02em; padding:1.4rem 1.2rem 0.2rem 1.2rem; border-bottom:none; }}
-.sb-logo-sub {{ font-family:'Inter', sans-serif; font-size:0.7rem; font-weight: 500; color:var(--dim); padding:0.2rem 1.2rem 0.8rem 1.2rem; border-bottom:1px solid var(--wire); }}
-.sb-section {{ padding:1rem 1.2rem; border-bottom:1px solid var(--wire); }}
-.sb-label {{ font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 700; text-transform:uppercase; color:var(--muted); margin-bottom:0.8rem; letter-spacing:0.02em; }}
-
-.quota-row {{ padding:0.8rem 1.2rem; border-bottom:1px solid var(--wire); }}
-.quota-label {{ display:flex; justify-content:space-between; font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 600; color:var(--muted); margin-bottom:0.5rem; }}
-.quota-track {{ height:4px; background:var(--wire); border-radius: 2px; overflow: hidden; }}
-.quota-fill {{ height:100%; background:var(--brass); }}
-
-.api-status {{ display:flex; gap:0.5rem; padding:0.7rem 1.2rem; border-bottom:1px solid var(--wire); flex-wrap: wrap; }}
-.api-pill {{ display:flex; align-items:center; gap:0.4rem; font-family:'Inter', sans-serif; font-size:0.7rem; font-weight: 600; padding:0.25rem 0.6rem; border:1px solid var(--wire); border-radius: 4px; }}
-.api-pill.on {{ border-color:var(--sage); color:var(--sage); background: rgba(16, 185, 129, 0.05); }}
-.api-pill.off {{ border-color:var(--wire); color:var(--dim); }}
-.api-dot {{ width:6px; height:6px; border-radius:50%; }}
-.api-pill.on .api-dot {{ background:var(--sage); }}
-.api-pill.off .api-dot {{ background:var(--dim); }}
-
-.record-meta {{ display:flex; gap:1rem; align-items:baseline; margin-bottom:0.8rem; padding-bottom:1rem; border-bottom:1px solid var(--wire); }}
-.record-date {{ font-family:'Inter', sans-serif; font-size:0.8rem; font-weight: 500; color:var(--muted); }}
-.record-topic {{ font-family:'Inter', sans-serif; font-size:1.6rem; font-weight:800; color:var(--text); line-height:1.3; margin-bottom:1rem; letter-spacing:-0.02em; word-wrap: break-word; }}
+.record-meta { display:flex; gap:1rem; align-items:baseline; margin-bottom:0.8rem; padding-bottom:1rem; border-bottom:1px solid var(--secondary-background-color); }
+.record-date { font-family:'Inter', sans-serif; font-size:0.8rem; font-weight: 500; color:var(--text-color); opacity:0.7; }
+.record-topic { font-family:'Inter', sans-serif; font-size:1.6rem; font-weight:800; color:var(--text-color); line-height:1.3; margin-bottom:1rem; letter-spacing:-0.02em; word-wrap: break-word; }
 
 /* === RESPONSIVE MEDIA QUERIES === */
-@media screen and (max-width: 768px) {{
-    .block-container {{ padding: 1.5rem 1rem 3rem 1rem !important; }}
-    
-    .masthead {{ flex-direction: column; align-items: flex-start; padding: 1.5rem 0 1rem 0; gap: 1.5rem; }}
-    .masthead-wordmark {{ font-size: 2rem; }}
-    .masthead-right {{ width: 100%; justify-content: space-between; align-items: flex-start; gap: 1rem; }}
-    .masthead-stat-val {{ text-align: left; font-size: 1.2rem; }}
-    .masthead-stat-lbl {{ text-align: left; font-size: 0.7rem; }}
-
-    .section-hd {{ flex-direction: column; align-items: flex-start; gap: 0.5rem; }}
-    .section-hd-num {{ font-size: 1.5rem; min-width: auto; }}
-    
-    .arg-card-header, .verdict-header {{ flex-direction: column; align-items: flex-start; gap: 0.3rem; }}
-    .arg-card-body, .verdict-body {{ padding: 1rem; font-size: 0.9rem; }}
-    
-    .record-meta {{ flex-direction: column; gap: 0.4rem; }}
-    .record-topic {{ font-size: 1.3rem; }}
-    
-    .round-divider {{ gap: 0.8rem; margin: 2rem 0 1rem 0; }}
-    .round-divider-label {{ font-size: 0.7rem; }}
-}}
+@media screen and (max-width: 768px) {
+    .block-container { padding: 1.5rem 1rem 3rem 1rem !important; }
+    .masthead { flex-direction: column; align-items: flex-start; padding: 1.5rem 0 1rem 0; gap: 1.5rem; }
+    .masthead-wordmark { font-size: 2rem; }
+    .masthead-right { width: 100%; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+    .masthead-stat-val { text-align: left; font-size: 1.2rem; }
+    .masthead-stat-lbl { text-align: left; font-size: 0.7rem; }
+    .section-hd { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+    .section-hd-num { font-size: 1.5rem; min-width: auto; }
+    .arg-card-header, .verdict-header { flex-direction: column; align-items: flex-start; gap: 0.3rem; }
+    .arg-card-body, .verdict-body { padding: 1rem; font-size: 0.9rem; }
+    .record-meta { flex-direction: column; gap: 0.4rem; }
+    .record-topic { font-size: 1.3rem; }
+    .round-divider { gap: 0.8rem; margin: 2rem 0 1rem 0; }
+    .round-divider-label { font-size: 0.7rem; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -515,13 +394,6 @@ with st.sidebar:
     st.markdown('<div class="sb-section">', unsafe_allow_html=True)
     st.button("+ New Debate", type="primary", use_container_width=True, on_click=lambda: st.session_state.update(current_view="new"))
     st.markdown('</div>', unsafe_allow_html=True)
-    
-    st.markdown('<div class="sb-section"><div class="sb-label">Appearance</div>', unsafe_allow_html=True)
-    theme_choice = st.radio("Theme",["Device", "Dark", "Light"], horizontal=True, label_visibility="collapsed", index=["Device", "Dark", "Light"].index(st.session_state.theme_choice))
-    if theme_choice != st.session_state.theme_choice:
-        st.session_state.theme_choice = theme_choice
-        st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sb-section"><div class="sb-label">Configuration</div>', unsafe_allow_html=True)
     num_agents  = st.slider("Debaters", 2, 5, 2)
@@ -535,7 +407,7 @@ with st.sidebar:
         except Exception: pass
     st.markdown('<div class="sb-section"><div class="sb-label">Knowledge Base</div>', unsafe_allow_html=True)
     if st.session_state.vectorstore:
-        st.markdown(f'<div style="font-family:\'Inter\',sans-serif;font-size:0.75rem;font-weight:600;color:var(--sage);margin-bottom:0.7rem;">● {doc_count} chunks indexed</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-family:\'Inter\',sans-serif;font-size:0.75rem;font-weight:600;color:#059669;margin-bottom:0.7rem;">● {doc_count} chunks indexed</div>', unsafe_allow_html=True)
         with st.expander("Add documents"):
             more_files = st.file_uploader("PDFs / TXT", type=["pdf","txt"], accept_multiple_files=True, key="append_files", label_visibility="collapsed")
             if st.button("Add to KB", use_container_width=True):
@@ -592,7 +464,7 @@ with st.sidebar:
 
     st.markdown('<div class="sb-section"><div class="sb-label">Archive</div>', unsafe_allow_html=True)
     if not st.session_state.past_debates:
-        st.markdown('<div style="font-family:\'Inter\',sans-serif;font-weight:500;font-size:0.75rem;color:var(--dim);padding:0.3rem 0;">No debates recorded.</div>', unsafe_allow_html=True)
+        st.markdown('<div style="font-family:\'Inter\',sans-serif;font-weight:500;font-size:0.75rem;color:var(--text-color);opacity:0.7;padding:0.3rem 0;">No debates recorded.</div>', unsafe_allow_html=True)
     for rec in st.session_state.past_debates:
         short = rec["topic"][:34] + "…" if len(rec["topic"]) > 34 else rec["topic"]
         if st.button(short, key=f"h_{rec['id']}", use_container_width=True):
