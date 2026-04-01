@@ -179,9 +179,8 @@ def save_new_debate(topic, history, verdict, research_logs, judge_model, gid):
             increment_quota(gid)
         except Exception as e:
             pass
-            
+
     st.session_state.past_debates.insert(0, record)
-    increment_quota(gid)
     return record
 
 def update_debate_chat(debate_id, record):
