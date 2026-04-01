@@ -128,29 +128,43 @@ def is_valid_supabase_guest(gid: str) -> bool:
 
 def ensure_guest_exists(gid):
     if is_valid_supabase_guest(gid):
-        supabase.table("guest_sessions").upsert({"guest_id": gid}).execute()
+        try:
+            supabase.table("guest_sessions").upsert({"guest_id": gid}).execute()
+        except Exception:
+            pass
 
 def get_quota(gid):
     if not is_valid_supabase_guest(gid): 
         return 0
-    res = supabase.table("guest_sessions").select("debates_run").eq("guest_id", gid).execute()
-    return res.data[0]["debates_run"] if res.data else 0
+    try:
+        res = supabase.table("guest_sessions").select("debates_run").eq("guest_id", gid).execute()
+        return res.data[0]["debates_run"] if res.data else 0
+    except Exception:
+        return 0
 
 def increment_quota(gid):
     if is_valid_supabase_guest(gid):
-        current = get_quota(gid)
-        supabase.table("guest_sessions").update({"debates_run": current + 1, "last_active": "now()"}).eq("guest_id", gid).execute()
+        try:
+            current = get_quota(gid)
+            supabase.table("guest_sessions").update({"debates_run": current + 1, "last_active": "now()"}).eq("guest_id", gid).execute()
+        except Exception:
+            pass
 
 def load_past_debates(gid):
     if not is_valid_supabase_guest(gid): 
         return []
-    res = supabase.table("debates").select("*").eq("guest_id", gid).order("created_at", desc=True).execute()
-    debates = []
-    for row in res.data:
-        d = row["history"]
-        d["id"] = row["debate_id"]
-        debates.append(d)
-    return debates
+    try:
+        res = supabase.table("debates").select("*").eq("guest_id", gid).order("created_at", desc=True).execute()
+        debates = []
+        for row in res.data:
+            d = row["history"]
+            d["id"] = row["debate_id"]
+            # Ensure the verdict state loads properly from the root column
+            d["verdict"] = row.get("verdict", d.get("verdict", "")) 
+            debates.append(d)
+        return debates
+    except Exception:
+        return []
 
 def save_new_debate(topic, history, verdict, research_logs, judge_model, gid):
     debate_id = str(uuid.uuid4())
@@ -167,24 +181,33 @@ def save_new_debate(topic, history, verdict, research_logs, judge_model, gid):
     
     # Save to Supabase ONLY if valid guest ID
     if is_valid_supabase_guest(gid):
-        supabase.table("debates").insert({
-            "debate_id": debate_id,
-            "guest_id": gid,
-            "topic": topic,
-            "verdict": verdict,
-            "history": record
-        }).execute()
-        increment_quota(gid)
-        
+        try:
+            supabase.table("debates").insert({
+                "debate_id": debate_id,
+                "guest_id": gid,
+                "topic": topic,
+                "verdict": verdict,
+                "history": record
+            }).execute()
+            increment_quota(gid)
+        except Exception as e:
+            pass
+            
     st.session_state.past_debates.insert(0, record)
     increment_quota(gid)
     return record
 
 def update_debate_chat(debate_id, record):
     if is_valid_supabase_guest(guest_id):
-        supabase.table("debates").update({"history": record}).eq("debate_id", debate_id).execute()
+        try:
+            # FIX: Explicitly update BOTH the history JSON column and the root verdict column
+            supabase.table("debates").update({
+                "history": record,
+                "verdict": record.get("verdict", "")
+            }).eq("debate_id", debate_id).execute()
+        except Exception:
+            pass
 
-# --- RUN AUTO CLEANUP TO SAVE FREE TIER ---
 try:
     supabase.rpc("cleanup_old_guests").execute()
 except Exception:
@@ -307,7 +330,7 @@ def delete_documents(file_names):
         try:
             # Tell Pinecone to purge chunks belonging to this file and this guest
             index.delete(filter={"file_name": {"$eq": fname}, "guest_id": {"$eq": guest_id}})
-        except Exception as e:
+        except Exception:
             pass
 
 def parse_response(response) -> str:
@@ -349,7 +372,7 @@ def retrieve_from_pinecone(query, llm):
                 parents.add(pt)
                 context_blocks.append(f"[Source: {doc.metadata.get('source','?')}]\n{pt}")
         return "\n\n---\n\n".join(context_blocks)
-    except Exception as e:
+    except Exception:
         return ""
 
 def serper_search(query, num_results=4):
@@ -463,7 +486,7 @@ with st.sidebar:
     for rec in st.session_state.past_debates:
         short = rec["topic"][:34] + "…" if len(rec["topic"]) > 34 else rec["topic"]
         if st.button(short, key=f"h_{rec['id']}", use_container_width=True):
-            st.session_state.current_view = "history"; st.session_state.selected_history = rec; st.rerun()
+            st.session_state.current_view = "history"; st.session_state.selected_history = dict(rec); st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
 
 # --- MAIN APP UI ---
@@ -531,21 +554,27 @@ if st.session_state.current_view == "new":
                 render_argument(AGENT_NAMES[i], ag["model"], argument, AGENT_COLORS[i % len(AGENT_COLORS)], topic)
                 debate_history.append(f"{AGENT_NAMES[i]}: {argument}")
                 
-                # 2. INCREMENTAL UPDATE: Save progress to Database and UI after every single argument
-                current_debate["history"] = debate_history
-                current_debate["research_logs"] = agent_research_logs
-                st.session_state.past_debates[0] = current_debate
+                # Incrementally save and force dict copies so Streamlit handles states cleanly
+                current_debate["history"] = list(debate_history)
+                current_debate["research_logs"] = list(agent_research_logs)
+                
+                # Explicit dict reassignment tells Streamlit the object changed
+                st.session_state.past_debates[0] = dict(current_debate)
                 update_debate_chat(current_debate["id"], current_debate)
 
         st.markdown('<div class="round-divider"><div class="round-divider-line"></div><div class="round-divider-label">Deliberation</div><div class="round-divider-line"></div></div>', unsafe_allow_html=True)
         with st.spinner(f"Final Synthesizer ({judge_model}) deliberating..."):
-            verdict_state = run_judge(topic, debate_history, judge_model)
-        render_verdict(verdict_state, judge_model)
+            final_verdict_text = run_judge(topic, debate_history, judge_model)
+            
+        render_verdict(final_verdict_text, judge_model)
 
-        # 3. FINAL UPDATE: Save the final verdict
-        current_debate["verdict"] = verdict_state
-        st.session_state.past_debates[0] = current_debate
-        update_debate_chat(current_debate["id"], current_debate)
+        # FIX: Explicit dictionary updates so Streamlit DOES NOT wipe it on re-render.
+        final_debate = dict(current_debate)
+        final_debate["verdict"] = final_verdict_text
+        
+        st.session_state.past_debates[0] = final_debate
+        st.session_state.selected_history = final_debate
+        update_debate_chat(final_debate["id"], final_debate)
 
         st.session_state.current_view = "history"
         st.session_state.selected_history = current_debate
@@ -587,4 +616,7 @@ elif st.session_state.current_view == "history":
                     ans = parse_response(get_llm(past.get("judge_model", DEFAULT_MODEL)).invoke(msgs))
                     st.markdown(ans)
             past["post_chat"].append({"role": "assistant", "content": ans})
+            
+            # Explicit re-assignment to preserve the follow-up chat logs in Streamlit
+            st.session_state.selected_history = dict(past)
             update_debate_chat(past["id"], past)
