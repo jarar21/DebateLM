@@ -33,10 +33,6 @@ AVAILABLE_MODELS =[
 ]
 DEFAULT_MODEL        = AVAILABLE_MODELS[0]
 MAX_DEBATES          = 5
-PARENT_CHUNK_SIZE    = 2000
-PARENT_CHUNK_OVERLAP = 200
-CHILD_CHUNK_SIZE     = 400
-CHILD_CHUNK_OVERLAP  = 50
 TOP_K_RETRIEVAL      = 15
 TOP_K_FINAL          = 8
 
@@ -184,20 +180,14 @@ def update_debate_chat(debate_id, record):
     if is_valid_supabase_guest(guest_id):
         supabase.table("debates").update({"history": record}).eq("debate_id", debate_id).execute()
 
-# --- RUN AUTO CLEANUP TO SAVE FREE TIER ---
-try:
-    supabase.rpc("cleanup_old_guests").execute()
-except Exception:
-    pass
+# --- RUN AUTO CLEANUP ---
+try: supabase.rpc("cleanup_old_guests").execute()
+except Exception: pass
 
-# Initialize session state
 ensure_guest_exists(guest_id)
-if "past_debates" not in st.session_state: 
-    st.session_state.past_debates = load_past_debates(guest_id)
-if "current_view" not in st.session_state: 
-    st.session_state.current_view = "new"
-if "selected_history" not in st.session_state: 
-    st.session_state.selected_history = None
+if "past_debates" not in st.session_state: st.session_state.past_debates = load_past_debates(guest_id)
+if "current_view" not in st.session_state: st.session_state.current_view = "new"
+if "selected_history" not in st.session_state: st.session_state.selected_history = None
 
 
 # --- 3. PINECONE INTEGRATION (Vector Database) ---
@@ -242,10 +232,8 @@ def process_documents(uploaded_files):
             with open(path, "wb") as f: 
                 f.write(uf.getbuffer())
             
-            if uf.name.lower().endswith(".pdf"):
-                raw_docs.extend(PyMuPDFLoader(path).load())
-            else:
-                raw_docs.extend(TextLoader(path).load())
+            if uf.name.lower().endswith(".pdf"): raw_docs.extend(PyMuPDFLoader(path).load())
+            else: raw_docs.extend(TextLoader(path).load())
                 
         # STEP 2: Splitting
         st.write("✂️ Slicing documents into AI-readable chunks...")
@@ -258,8 +246,7 @@ def process_documents(uploaded_files):
                 child.metadata["guest_id"] = guest_id
                 child.metadata["parent_text"] = parent.page_content 
                 child.metadata["source"] = parent.metadata.get("source", "unknown")
-                if "page" in child.metadata:
-                    del child.metadata["page"]
+                if "page" in child.metadata: del child.metadata["page"]
             child_docs.extend(children)
             
         # STEP 3: Embedding & Uploading with Live Progress
@@ -268,22 +255,18 @@ def process_documents(uploaded_files):
         
         vs = get_vectorstore()
         progress_bar = st.progress(0.0)
-        
-        BATCH_SIZE = 150 # Safe batch size for Gemini Free Tier
+        BATCH_SIZE = 150 
         total_batches = (total_chunks + BATCH_SIZE - 1) // BATCH_SIZE
         
         for i in range(0, total_chunks, BATCH_SIZE):
             batch = child_docs[i : i + BATCH_SIZE]
-            
-            # Update Progress Bar dynamically
             current_batch = (i // BATCH_SIZE) + 1
-            pct = min(current_batch / total_batches, 1.0)
-            progress_bar.progress(pct, text=f"Uploading batch {current_batch} of {total_batches}...")
+            progress_bar.progress(min(current_batch / total_batches, 1.0), text=f"Uploading batch {current_batch} of {total_batches}...")
             
             # The actual upload
             try:
                 vs.add_documents(batch)
-                time.sleep(0.5) # The necessary free-tier breather
+                time.sleep(0.5) 
             except Exception as e:
                 # Check if it's ACTUALLY a Rate Limit
                 if "429" in str(e) or "quota" in str(e).lower():
@@ -340,7 +323,7 @@ def retrieve_from_pinecone(query, llm):
                 parents.add(pt)
                 context_blocks.append(f"[Source: {doc.metadata.get('source','?')}]\n{pt}")
         return "\n\n---\n\n".join(context_blocks)
-    except Exception as e:
+    except Exception:
         return ""
 
 def serper_search(query, num_results=4):
@@ -365,7 +348,7 @@ def run_agent_turn(agent_idx, agent_data, topic, query, rag_context, web_evidenc
     if web_evidence: context_block += f"\nLIVE WEB EVIDENCE:\n{format_web_evidence(web_evidence)}\n"
     
     no_kb = not context_block.strip()
-    citation_rule = "Do NOT fabricate citations. Base arguments on logic and first principles." if no_kb else "Cite empirical claims using[Source: ...] or [Web: URL]."
+    citation_rule = "Do NOT fabricate citations. Base arguments on logic and first principles." if no_kb else "Cite empirical claims using [Source: ...] or [Web: URL]."
     
     system = (f"IDENTITY: {agent_data['instruction']}\n\n"
               f"You just researched: '{query}'. Based on this, you found:\n{context_block if context_block else 'No external documents or web evidence provided.'}\n\n"
@@ -476,10 +459,24 @@ if st.session_state.current_view == "new":
     if debates_used >= MAX_DEBATES:
         st.error(f"🛑 You have reached the {MAX_DEBATES} debate limit for this demo.")
         
-    launch = st.button("Launch Debate", type="primary", disabled=not can_debate)
+    
+    # --- LAUNCH & STOP BUTTONS ---
+    btn_col1, btn_col2 = st.columns(2)
+    with btn_col1:
+        launch = st.button("Launch Debate", type="primary", disabled=not can_debate, use_container_width=True)
+    with btn_col2:
+        stop_clicked = st.button("🛑 Stop Ongoing Debate", use_container_width=True)
+
+    if stop_clicked:
+        st.success("Debate interrupted. The partial transcript is safely saved in your History on the sidebar!")
 
     if launch and topic.strip():
-        debate_history, agent_research_logs = [],[]
+        
+        # 1. INITIAL SAVE: Create the debate instantly so it counts against quota and is preserved.
+        debate_history, agent_research_logs = [], []
+        verdict_state = "⚠️ *Debate was interrupted early. No final synthesis available.*"
+        
+        current_debate = save_new_debate(topic, debate_history, verdict_state, agent_research_logs, judge_model, guest_id)
 
         for r in range(num_rounds):
             render_round_divider(r + 1, num_rounds)
@@ -488,9 +485,7 @@ if st.session_state.current_view == "new":
                 with st.spinner(f"{AGENT_NAMES[i]} researching & formulating..."):
                     # 1. Private Cloud RAG Retrieval (Pinecone)
                     rag_context = retrieve_from_pinecone(topic, agent_llm)
-                    # 2. Web Retrieval (Serper)
-                    web_results = serper_search(topic, 4) if use_web and r == 0 else[]
-                    
+                    web_results = serper_search(topic, 4) if use_web and r == 0 else []
                     argument = run_agent_turn(i, ag, topic, topic, rag_context, web_results, debate_history, r + 1)
                     
                     agent_research_logs.append({
@@ -500,15 +495,26 @@ if st.session_state.current_view == "new":
                     
                 render_argument(AGENT_NAMES[i], ag["model"], argument, AGENT_COLORS[i % len(AGENT_COLORS)], topic)
                 debate_history.append(f"{AGENT_NAMES[i]}: {argument}")
+                
+                # 2. INCREMENTAL UPDATE: Save progress to Database and UI after every single argument
+                current_debate["history"] = debate_history
+                current_debate["research_logs"] = agent_research_logs
+                st.session_state.past_debates[0] = current_debate
+                update_debate_chat(current_debate["id"], current_debate)
 
         st.markdown('<div class="round-divider"><div class="round-divider-line"></div><div class="round-divider-label">Deliberation</div><div class="round-divider-line"></div></div>', unsafe_allow_html=True)
         with st.spinner(f"Final Synthesizer ({judge_model}) deliberating..."):
-            verdict = run_judge(topic, debate_history, judge_model)
-        render_verdict(verdict, judge_model)
+            verdict_state = run_judge(topic, debate_history, judge_model)
+        render_verdict(verdict_state, judge_model)
 
-        # Saves securely to Supabase and increments quota!
-        new_rec = save_new_debate(topic, debate_history, verdict, agent_research_logs, judge_model, guest_id)
-        st.session_state.current_view = "history"; st.session_state.selected_history = new_rec; st.rerun()
+        # 3. FINAL UPDATE: Save the final verdict
+        current_debate["verdict"] = verdict_state
+        st.session_state.past_debates[0] = current_debate
+        update_debate_chat(current_debate["id"], current_debate)
+
+        st.session_state.current_view = "history"
+        st.session_state.selected_history = current_debate
+        st.rerun()
 
 elif st.session_state.current_view == "history":
     past = st.session_state.selected_history
@@ -519,12 +525,12 @@ elif st.session_state.current_view == "history":
     tab1, tab2, tab3 = st.tabs(["Transcript", "Research Logs", "Follow-up"])
 
     with tab1:
-        for msg in past["history"]:
+        for msg in past.get("history", []):
             if ": " in msg:
                 speaker, text = msg.split(": ", 1)
                 idx = {"I":0, "II":1, "III":2, "IV":3, "V":4}.get(re.search(r"(V?I{0,3}|I{1,3}V?)$", speaker.strip()).group(), 0) if re.search(r"(V?I{0,3}|I{1,3}V?)$", speaker.strip()) else 0
                 render_argument(speaker, "", text, AGENT_COLORS[idx % len(AGENT_COLORS)])
-        render_verdict(past["verdict"], past.get("judge_model",""))
+        render_verdict(past.get("verdict", ""), past.get("judge_model",""))
 
     with tab2:
         for log in past.get("research_logs",[]):
@@ -541,7 +547,7 @@ elif st.session_state.current_view == "history":
             with st.chat_message("user"): st.markdown(q)
             with st.chat_message("assistant"):
                 with st.spinner("Deliberating…"):
-                    msgs =[SystemMessage(content=f"Synthesizer. Debate: '{past['topic']}'. VERDICT: {past['verdict']}")]
+                    msgs =[SystemMessage(content=f"Synthesizer. Debate: '{past['topic']}'. VERDICT: {past.get('verdict','')}")]
                     for cm in past["post_chat"]: msgs.append(HumanMessage(content=cm["content"]) if cm["role"]=="user" else AIMessage(content=cm["content"]))
                     ans = parse_response(get_llm(past.get("judge_model", DEFAULT_MODEL)).invoke(msgs))
                     st.markdown(ans)
