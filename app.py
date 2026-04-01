@@ -384,7 +384,9 @@ def run_agent_turn(agent_idx, agent_data, topic, query, rag_context, web_evidenc
     if web_evidence: context_block += f"\nLIVE WEB EVIDENCE:\n{format_web_evidence(web_evidence)}\n"
     
     no_kb = not context_block.strip()
-    citation_rule = "Do NOT fabricate citations. Base arguments on logic and first principles." if no_kb else "Cite empirical claims using[Source: ...] or [Web: URL]."
+    
+    # 💥 Updated Rule: Forces the LLM to strictly use a predictable tag format so we can regex it beautifully.
+    citation_rule = "Do NOT fabricate citations. Base arguments on logic and first principles." if no_kb else "Cite empirical claims strictly using the syntax [Source: Document/Title] or [Web: Domain/Title]."
     
     system = (f"IDENTITY: {agent_data['instruction']}\n\n"
               f"You just researched: '{query}'. Based on this, you found:\n{context_block if context_block else 'No external documents or web evidence provided.'}\n\n"
@@ -397,13 +399,29 @@ def run_agent_turn(agent_idx, agent_data, topic, query, rag_context, web_evidenc
 def run_judge(topic, debate_history, judge_model):
     llm = get_llm(judge_model)
     return parse_response(llm.invoke([
-        SystemMessage(content="You are the Final Synthesizer. Evaluate the debate purely on the transcripts and citations provided."),
+        SystemMessage(content="You are the Final Synthesizer. Evaluate the debate purely on the transcripts and citations provided. Cite references using [Source: Title]."),
         HumanMessage(content=f"TOPIC: '{topic}'\n\nTRANSCRIPT:\n{chr(10).join(debate_history)}\n\nDeliver your FINAL Verdict with Strongest Arguments, Weakest Arguments, and Synthesis. 400-600 words.")
     ]))
 
 
 AGENT_COLORS =["#6366F1", "#38BDF8", "#A855F7", "#10B981", "#F43F5E"]
 AGENT_NAMES  =["AGENT I", "AGENT II", "AGENT III", "AGENT IV", "AGENT V"]
+
+# --- 💥 BEAUTIFUL CITATION FORMATTER ---
+def format_professional_citations(text):
+    """
+    Finds [Source: XYZ] and [Web: XYZ] and replaces them with beautiful HTML pills.
+    Allows Streamlit's Markdown parser to keep surrounding text bold/italic.
+    """
+    # Beautiful Badge for Document/PDF sources
+    doc_pill = r'<span style="background-color: rgba(128,128,128,0.1); color: inherit; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.75em; font-weight: 600; margin: 0 0.2rem; border: 1px solid rgba(128,128,128,0.2); white-space: nowrap;"><span style="opacity:0.7">📄</span> \1</span>'
+    text = re.sub(r'\[Source:\s*([^\]]+)\]', doc_pill, text, flags=re.IGNORECASE)
+    
+    # Beautiful Badge for Live Web search sources
+    web_pill = r'<span style="background-color: rgba(56,189,248,0.1); color: inherit; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.75em; font-weight: 600; margin: 0 0.2rem; border: 1px solid rgba(56,189,248,0.3); white-space: nowrap;"><span style="opacity:0.7">🌐</span> \1</span>'
+    text = re.sub(r'\[Web:\s*([^\]]+)\]', web_pill, text, flags=re.IGNORECASE)
+    
+    return text
 
 # NATIVE MARKDOWN RENDERING
 def render_argument(speaker, model_name, text, color, query=None):
@@ -415,10 +433,12 @@ def render_argument(speaker, model_name, text, color, query=None):
     </div>
     """, unsafe_allow_html=True)
     
-    # 💥 Streamlit Native Markdown rendering for the LLM output
-    st.markdown(text)
+    # 💥 Apply the professional citation formatter before passing to st.markdown
+    formatted_text = format_professional_citations(text)
     
-    # Render the Query via Streamlit native Markdown caption
+    # Streamlit Native Markdown rendering (unsafe_allow_html=True lets the beautiful HTML badges render)
+    st.markdown(formatted_text, unsafe_allow_html=True)
+    
     if query:
         st.caption(f"🔍 **Research query:** {query}")
 
@@ -431,8 +451,10 @@ def render_verdict(text, model_name):
     </div>
     """, unsafe_allow_html=True)
     
-    # 💥 Streamlit Native Markdown rendering for Final Verdict Output
-    st.markdown(text)
+    # 💥 Apply the professional citation formatter to the verdict too
+    formatted_verdict = format_professional_citations(text)
+    
+    st.markdown(formatted_verdict, unsafe_allow_html=True)
 
 def render_round_divider(r, total):
     st.markdown(f'<div class="round-divider"><div class="round-divider-line"></div><div class="round-divider-label">Round {r} of {total}</div><div class="round-divider-line"></div></div>', unsafe_allow_html=True)
@@ -611,16 +633,22 @@ elif st.session_state.current_view == "history":
 
     with tab3:
         for cm in past.get("post_chat", []):
-            with st.chat_message(cm["role"]): st.markdown(cm["content"])
+            with st.chat_message(cm["role"]): 
+                # Also format citations beautifully in the follow-up chat!
+                st.markdown(format_professional_citations(cm["content"]), unsafe_allow_html=True)
+                
         if q := st.chat_input("Ask a follow-up question…"):
             past.setdefault("post_chat",[]).append({"role": "user", "content": q})
             with st.chat_message("user"): st.markdown(q)
             with st.chat_message("assistant"):
                 with st.spinner("Deliberating…"):
-                    msgs =[SystemMessage(content=f"Synthesizer. Debate: '{past['topic']}'. VERDICT: {past.get('verdict','')}")]
+                    msgs =[SystemMessage(content=f"Synthesizer. Debate: '{past['topic']}'. VERDICT: {past.get('verdict','')}. Cite sources if needed using [Source: Title].")]
                     for cm in past["post_chat"]: msgs.append(HumanMessage(content=cm["content"]) if cm["role"]=="user" else AIMessage(content=cm["content"]))
                     ans = parse_response(get_llm(past.get("judge_model", DEFAULT_MODEL)).invoke(msgs))
-                    st.markdown(ans)
+                    
+                    # 💥 Make the citations beautiful here too!
+                    st.markdown(format_professional_citations(ans), unsafe_allow_html=True)
+                    
             past["post_chat"].append({"role": "assistant", "content": ans})
             
             # Explicit re-assignment to preserve the follow-up chat logs in Streamlit
