@@ -257,19 +257,15 @@ def parse_response(response):
 def get_llm(model: str):
     return ChatGoogleGenerativeAI(model=model, google_api_key=GEMINI_API_KEY, temperature=0.7)
 
-def generate_agent_queries(topic, agents_config, llm):
+def generate_agent_query(topic, agent_config):
     try:
-        prompt = f"Topic: '{topic}'\nGenerate a short Google search query (under 8 words) for each agent persona to find evidence supporting their specific view.\n\n"
-        for i, ag in enumerate(agents_config):
-            prompt += f"Agent {i} Persona: {ag['instruction']}\n"
-        prompt += "\nReturn ONLY a JSON list of strings, e.g. [\"query1\", \"query2\"]."
-        raw = parse_response(llm.invoke([SystemMessage(content="You are a research planner."), HumanMessage(content=prompt)]))
-        raw_json = re.search(r'\[.*\]', raw.replace('\n', ''))
-        if raw_json:
-            queries = json.loads(raw_json.group())
-            if len(queries) == len(agents_config): return queries
-    except Exception as e: print("Query Gen Error:", e)
-    return [topic] * len(agents_config)
+        agent_llm = get_llm(agent_config["model"])
+        prompt = f"Topic: '{topic}'\nYour Identity/Persona: {agent_config['instruction']}\n\nBased ONLY on your specific persona and the topic, what is the single most effective Google search query (under 8 words) you would run right now to find evidence supporting your unique perspective? Return ONLY the search string, no quotes, no explanation."
+        raw = parse_response(agent_llm.invoke([SystemMessage(content="You are an expert researcher defining your own strategy."), HumanMessage(content=prompt)])).strip().replace('"', '')
+        return raw if raw else topic
+    except Exception as e:
+        print(f"Query Gen Error for agent {agent_config.get('id', 'unknown')}:", e)
+        return topic
 
 def gemini_rerank(query, candidates, llm, persona=None):
     if not candidates: return candidates
@@ -436,9 +432,13 @@ if st.session_state.current_view == "new":
         debate_history, agent_research_logs = [],[]
         current_debate = save_new_debate(topic, debate_history, "⚠️ *Debate interrupted. No synthesis.*", agent_research_logs, judge_model, guest_id)
 
-        # 🔥 QUALITY FIX: Generate tailored search queries based on agent personas
-        with st.spinner("Formulating personalized research strategies..."):
-            agent_queries = generate_agent_queries(topic, agents_config, get_llm(judge_model))
+        # 🔥 AUTONOMOUS RESEARCH: Each agent independently decides its own search strategy based on its persona
+        with st.spinner("Agents are autonomously defining their research strategies..."):
+            agent_queries = {}
+            with ThreadPoolExecutor(max_workers=min(num_agents, 5)) as executor:
+                query_futures = {executor.submit(generate_agent_query, topic, ag): i for i, ag in enumerate(agents_config)}
+                for future in as_completed(query_futures):
+                    agent_queries[query_futures[future]] = future.result()
 
         for r in range(num_rounds):
             render_round_divider(r + 1, num_rounds)
