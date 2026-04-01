@@ -1,5 +1,6 @@
 import streamlit as st
 import os, json, datetime, uuid, hashlib, time, re, tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from pinecone import Pinecone
@@ -231,12 +232,12 @@ def process_documents(uploaded_files):
     
     for i in range(0, total_chunks, BATCH_SIZE):
         batch = child_docs[i : i + BATCH_SIZE]
-        progress_bar.progress(0.2 + (0.8 * ((i // BATCH_SIZE + 1) / total_batches)), text=f"Uploading batch {(i // BATCH_SIZE) + 1}...")
+        progress_bar.progress(0.2 + (0.8 * ((i // BATCH_SIZE + 1) / total_batches)), text=f"Uploading batch {(i // BATCH_SIZE) + 1} of {total_batches}...")
         try:
             vs.add_documents(batch)
-            time.sleep(0.5) 
         except Exception:
-            time.sleep(5)
+            progress_bar.progress(0.2 + (0.8 * ((i // BATCH_SIZE + 1) / total_batches)), text=f"⚠️ Network hiccup. Retrying batch {(i // BATCH_SIZE) + 1} in 2s...")
+            time.sleep(2)
             vs.add_documents(batch)
             
     progress_bar.empty()
@@ -420,13 +421,26 @@ if st.session_state.current_view == "new":
         debate_history, agent_research_logs = [],[]
         current_debate = save_new_debate(topic, debate_history, "⚠️ *Debate interrupted. No synthesis.*", agent_research_logs, judge_model, guest_id)
 
+        # 🔥 SPEED FIX: Fetch global web results ONCE for the whole debate to save time and API credits
+        with st.spinner("Fetching global web context..."):
+            global_web_results = serper_search(topic, 4) if use_web else []
+
         for r in range(num_rounds):
             render_round_divider(r + 1, num_rounds)
+            
+            # 🔥 SPEED FIX: Pre-fetch RAG for all agents in parallel to eliminate the bottleneck
+            with st.spinner(f"Round {r+1} Intelligence Gathering..."):
+                rag_contexts = {}
+                with ThreadPoolExecutor(max_workers=min(num_agents, 5)) as executor:
+                    futures = {executor.submit(retrieve_from_pinecone, topic, get_llm(ag["model"])): i for i, ag in enumerate(agents_config)}
+                    for future in as_completed(futures):
+                        rag_contexts[futures[future]] = future.result()
+
             for i, ag in enumerate(agents_config):
                 agent_llm = get_llm(ag["model"])
-                with st.spinner(f"{AGENT_NAMES[i]} researching & formulating..."):
-                    rag_context = retrieve_from_pinecone(topic, agent_llm)
-                    web_results = serper_search(topic, 4) if use_web and r == 0 else []
+                with st.spinner(f"{AGENT_NAMES[i]} formulating argument..."):
+                    rag_context = rag_contexts.get(i, "")
+                    web_results = global_web_results if r == 0 else []
                     argument = run_agent_turn(i, ag, topic, topic, rag_context, web_results, debate_history, r + 1)
                     agent_research_logs.append({"round": r + 1, "agent": AGENT_NAMES[i], "query": topic, "web": web_results, "rag_found": bool(rag_context)})
                     
