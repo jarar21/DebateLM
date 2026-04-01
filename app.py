@@ -214,7 +214,13 @@ def get_vectorstore():
         google_api_key=GEMINI_API_KEY,
         output_dimensionality=768 
     )
-    return PineconeVectorStore(index_name=PINECONE_INDEX_NAME, embedding=emb)
+    
+    # FIX: Explicitly pass the pinecone_api_key so Langchain doesn't get confused!
+    return PineconeVectorStore(
+        index_name=PINECONE_INDEX_NAME, 
+        embedding=emb,
+        pinecone_api_key=PINECONE_API_KEY 
+    )
 
 def process_documents(uploaded_files):
     TEMP_DIR = "/tmp/debatelm_docs"
@@ -279,10 +285,15 @@ def process_documents(uploaded_files):
                 vs.add_documents(batch)
                 time.sleep(0.5) # The necessary free-tier breather
             except Exception as e:
-                # If Google throws a 429 Rate Limit, wait a few seconds and try again!
-                st.write("⚠️ Free tier rate limit hit, taking a short 5-second breather...")
-                time.sleep(5)
-                vs.add_documents(batch)
+                # Check if it's ACTUALLY a Rate Limit
+                if "429" in str(e) or "quota" in str(e).lower():
+                    st.write("⚠️ Google rate limit hit, taking a 10-second breather...")
+                    time.sleep(10)
+                    vs.add_documents(batch)
+                else:
+                    # If it's an Unauthorized or missing index error, stop and show the real error!
+                    st.error(f"❌ Database Error: {str(e)}")
+                    raise e
                 
         # Finish gracefully
         progress_bar.empty()
