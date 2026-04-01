@@ -91,7 +91,7 @@ supabase = init_supabase()
 
 def is_valid_supabase_guest(gid: str) -> bool:
     if not gid: return False
-    return bool(re.match(r"^guest_[a-z0-9]{16,}$", gid))
+    return bool(re.match(r"^guest_[a-z0-9]{20,}$", gid))
 
 # 🔥 NEW: Merged function to get guest quota AND preferences efficiently
 def get_guest_session_data(gid):
