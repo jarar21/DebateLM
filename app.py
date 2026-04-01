@@ -267,26 +267,13 @@ def generate_agent_query(topic, agent_config):
         print(f"Query Gen Error for agent {agent_config.get('id', 'unknown')}:", e)
         return topic
 
-def gemini_rerank(query, candidates, llm, persona=None):
-    if not candidates: return candidates
-    numbered = "\n".join(f"{i+1}. {doc.page_content[:300]}" for i, enumerate in enumerate(candidates))
-    rank_prompt = f"Rank by relevance to the query AND this specific persona: '{persona}'. Reply ONLY with comma-separated numbers.\nQuery: {query}\n\n{numbered}" if persona else f"Rank by relevance. Reply ONLY with comma-separated numbers.\nQuery: {query}\n\n{numbered}"
+def retrieve_from_pinecone(query):
     try:
-        raw = parse_response(llm.invoke(rank_prompt)).strip()
-        indices =[int(x.strip())-1 for x in raw.split(",") if x.strip().isdigit()]
-        reranked = [candidates[i] for i in indices if 0 <= i < len(candidates)]
-        seen = set(id(d) for d in reranked)
-        for d in candidates:
-            if id(d) not in seen: reranked.append(d)
-        return reranked[:TOP_K_FINAL]
-    except Exception: return candidates[:TOP_K_FINAL]
-
-def retrieve_from_pinecone(query, llm, persona=None):
-    try:
-        results = get_vectorstore().similarity_search(query, k=TOP_K_RETRIEVAL, filter={"guest_id": guest_id})
-        reranked = gemini_rerank(query, results, llm, persona)
+        # We trust Gemini's 1M-token context window to find the needle in the haystack.
+        # Bypass the slow, expensive LLM reranking and just pull the top 20 raw chunks.
+        results = get_vectorstore().similarity_search(query, k=20, filter={"guest_id": guest_id})
         parents, context_blocks = set(), []
-        for doc in reranked:
+        for doc in results:
             pt = doc.metadata.get("parent_text", doc.page_content)
             if pt not in parents:
                 parents.add(pt)
@@ -448,7 +435,7 @@ if st.session_state.current_view == "new":
                 rag_contexts = {}
                 web_contexts = {}
                 with ThreadPoolExecutor(max_workers=min(num_agents * 2, 10)) as executor:
-                    futures_rag = {executor.submit(retrieve_from_pinecone, agent_queries[i], get_llm(ag["model"]), ag["instruction"]): i for i, ag in enumerate(agents_config)}
+                    futures_rag = {executor.submit(retrieve_from_pinecone, agent_queries[i]): i for i, ag in enumerate(agents_config)}
                     futures_web = {executor.submit(serper_search, agent_queries[i], 3): i for i, ag in enumerate(agents_config)} if use_web and r == 0 else {}
                     
                     for future in as_completed(futures_rag):
