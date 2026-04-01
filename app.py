@@ -71,12 +71,14 @@ footer, .stDeployButton { display: none !important; }
 .arg-card-speaker { font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 700; letter-spacing:0.05em; text-transform:uppercase; }
 .arg-card-model { font-family:'Inter', sans-serif; font-size:0.7rem; color:var(--text-color); opacity:0.7; font-weight: 500; }
 .arg-card-body { padding:1.2rem 1.4rem; font-family:'Inter', sans-serif; font-size:0.95rem; line-height:1.6; color:var(--text-color); word-wrap: break-word; }
+.arg-card-body p:last-child { margin-bottom: 0; }
 .arg-card-query { padding:0.6rem 1.4rem; font-family:'Inter', sans-serif; font-size:0.75rem; color:var(--text-color); opacity:0.7; border-top:1px dashed var(--secondary-background-color); background:var(--secondary-background-color); word-wrap: break-word; }
 .verdict-card { border:1px solid var(--primary-color); border-radius: 6px; background:var(--secondary-background-color); margin-top:1.5rem; position:relative; overflow:hidden; }
 .verdict-header { display:flex; align-items:center; justify-content:space-between; padding:0.85rem 1.4rem; border-bottom:1px solid var(--primary-color); background:var(--background-color); }
 .verdict-title { font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 700; letter-spacing:0.05em; text-transform:uppercase; color:var(--primary-color); }
 .verdict-model { font-family:'Inter', sans-serif; font-size:0.7rem; font-weight: 500; color:var(--primary-color); opacity: 0.8; }
 .verdict-body { padding:1.5rem; font-family:'Inter', sans-serif; font-size:0.95rem; line-height:1.6; color:var(--text-color); word-wrap: break-word; }
+.verdict-body p:last-child { margin-bottom: 0; }
 .sb-logo { font-family:'Inter', sans-serif; font-size:1.2rem; font-weight:800; color:var(--text-color); letter-spacing:-0.02em; padding:1.4rem 1.2rem 0.2rem 1.2rem; border-bottom:none; }
 .sb-logo-sub { font-family:'Inter', sans-serif; font-size:0.7rem; font-weight: 500; color:var(--text-color); opacity:0.7; padding:0.2rem 1.2rem 0.8rem 1.2rem; border-bottom:1px solid var(--secondary-background-color); }
 .sb-section { padding:1rem 1.2rem; border-bottom:1px solid var(--secondary-background-color); }
@@ -418,22 +420,41 @@ def run_judge(topic, debate_history, judge_model):
 AGENT_COLORS =["#6366F1", "#38BDF8", "#A855F7", "#10B981", "#F43F5E"]
 AGENT_NAMES  =["AGENT I", "AGENT II", "AGENT III", "AGENT IV", "AGENT V"]
 
-def _esc(s): return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace("\n","<br>")
-
+# --- THE MAGIC STREAMLIT MARKDOWN TRICK ---
+# By leaving exactly two blank lines around {text} inside the HTML tags, 
+# Streamlit's native markdown parser is forced to process the text inside the div!
 def render_argument(speaker, model_name, text, color, query=None):
-    query_html = f'<div class="arg-card-query">🔍 Research query: <i>{_esc(query)}</i></div>' if query else ""
-    st.markdown(f"""<div class="arg-card">
-        <div class="arg-card-accent" style="background:{color}"></div>
-        <div class="arg-card-header"><span class="arg-card-speaker" style="color:{color}">{speaker}</span><span class="arg-card-model">{model_name}</span></div>
-        <div class="arg-card-body">{_esc(text)}</div>{query_html}</div>""", unsafe_allow_html=True)
+    safe_query = query.replace("<", "&lt;").replace(">", "&gt;") if query else ""
+    query_html = f'<div class="arg-card-query">🔍 Research query: <i>{safe_query}</i></div>' if query else ""
+    
+    st.markdown(f"""
+<div class="arg-card">
+    <div class="arg-card-accent" style="background:{color}"></div>
+    <div class="arg-card-header"><span class="arg-card-speaker" style="color:{color}">{speaker}</span><span class="arg-card-model">{model_name}</span></div>
+    <div class="arg-card-body">
+
+{text}
+
+    </div>
+    {query_html}
+</div>
+""", unsafe_allow_html=True)
 
 def render_verdict(text, model_name):
-    st.markdown(f"""<div class="verdict-card">
-        <div class="verdict-header"><span class="verdict-title">⚖ Final Verdict</span><span class="verdict-model">{model_name}</span></div>
-        <div class="verdict-body">{_esc(text)}</div></div>""", unsafe_allow_html=True)
+    st.markdown(f"""
+<div class="verdict-card">
+    <div class="verdict-header"><span class="verdict-title">⚖ Final Verdict</span><span class="verdict-model">{model_name}</span></div>
+    <div class="verdict-body">
+
+{text}
+
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
 def render_round_divider(r, total):
     st.markdown(f'<div class="round-divider"><div class="round-divider-line"></div><div class="round-divider-label">Round {r} of {total}</div><div class="round-divider-line"></div></div>', unsafe_allow_html=True)
+
 
 # --- SIDEBAR & QUOTA UI ---
 with st.sidebar:
