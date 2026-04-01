@@ -65,18 +65,6 @@ footer, .stDeployButton { display: none !important; }
 .round-divider { display:flex; align-items:center; gap:1.2rem; margin:2.5rem 0 1.5rem 0; }
 .round-divider-line { flex:1; height:1px; background:var(--secondary-background-color); }
 .round-divider-label { font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 600; color:var(--text-color); opacity:0.7; text-transform:uppercase; letter-spacing:0.1em; white-space:nowrap; text-align: center; }
-.arg-card { border:1px solid var(--secondary-background-color); background:var(--background-color); border-radius: 6px; margin-bottom:1.2rem; position:relative; overflow:hidden; }
-.arg-card-accent { position:absolute; top:0; left:0; width:4px; height:100%; }
-.arg-card-header { display:flex; align-items:center; justify-content:space-between; padding:0.75rem 1.2rem; border-bottom:1px solid var(--secondary-background-color); background:var(--secondary-background-color); }
-.arg-card-speaker { font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 700; letter-spacing:0.05em; text-transform:uppercase; }
-.arg-card-model { font-family:'Inter', sans-serif; font-size:0.7rem; color:var(--text-color); opacity:0.7; font-weight: 500; }
-.arg-card-body { padding:1.2rem 1.4rem; font-family:'Inter', sans-serif; font-size:0.95rem; line-height:1.6; color:var(--text-color); word-wrap: break-word; }
-.arg-card-query { padding:0.6rem 1.4rem; font-family:'Inter', sans-serif; font-size:0.75rem; color:var(--text-color); opacity:0.7; border-top:1px dashed var(--secondary-background-color); background:var(--secondary-background-color); word-wrap: break-word; }
-.verdict-card { border:1px solid var(--primary-color); border-radius: 6px; background:var(--secondary-background-color); margin-top:1.5rem; position:relative; overflow:hidden; }
-.verdict-header { display:flex; align-items:center; justify-content:space-between; padding:0.85rem 1.4rem; border-bottom:1px solid var(--primary-color); background:var(--background-color); }
-.verdict-title { font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 700; letter-spacing:0.05em; text-transform:uppercase; color:var(--primary-color); }
-.verdict-model { font-family:'Inter', sans-serif; font-size:0.7rem; font-weight: 500; color:var(--primary-color); opacity: 0.8; }
-.verdict-body { padding:1.5rem; font-family:'Inter', sans-serif; font-size:0.95rem; line-height:1.6; color:var(--text-color); word-wrap: break-word; }
 .sb-logo { font-family:'Inter', sans-serif; font-size:1.2rem; font-weight:800; color:var(--text-color); letter-spacing:-0.02em; padding:1.4rem 1.2rem 0.2rem 1.2rem; border-bottom:none; }
 .sb-logo-sub { font-family:'Inter', sans-serif; font-size:0.7rem; font-weight: 500; color:var(--text-color); opacity:0.7; padding:0.2rem 1.2rem 0.8rem 1.2rem; border-bottom:1px solid var(--secondary-background-color); }
 .sb-section { padding:1rem 1.2rem; border-bottom:1px solid var(--secondary-background-color); }
@@ -87,7 +75,6 @@ footer, .stDeployButton { display: none !important; }
 .quota-fill { height:100%; background:var(--primary-color); }
 .record-meta { display:flex; gap:1rem; align-items:baseline; margin-bottom:0.8rem; padding-bottom:1rem; border-bottom:1px solid var(--secondary-background-color); }
 .record-date { font-family:'Inter', sans-serif; font-size:0.8rem; font-weight: 500; color:var(--text-color); opacity:0.7; }
-.record-topic { font-family:'Inter', sans-serif; font-size:1.6rem; font-weight:800; color:var(--text-color); line-height:1.3; margin-bottom:1rem; letter-spacing:-0.02em; word-wrap: break-word; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -418,19 +405,34 @@ def run_judge(topic, debate_history, judge_model):
 AGENT_COLORS =["#6366F1", "#38BDF8", "#A855F7", "#10B981", "#F43F5E"]
 AGENT_NAMES  =["AGENT I", "AGENT II", "AGENT III", "AGENT IV", "AGENT V"]
 
-def _esc(s): return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace("\n","<br>")
-
+# NATIVE MARKDOWN RENDERING
 def render_argument(speaker, model_name, text, color, query=None):
-    query_html = f'<div class="arg-card-query">🔍 Research query: <i>{_esc(query)}</i></div>' if query else ""
-    st.markdown(f"""<div class="arg-card">
-        <div class="arg-card-accent" style="background:{color}"></div>
-        <div class="arg-card-header"><span class="arg-card-speaker" style="color:{color}">{speaker}</span><span class="arg-card-model">{model_name}</span></div>
-        <div class="arg-card-body">{_esc(text)}</div>{query_html}</div>""", unsafe_allow_html=True)
+    # Output the header styling alone
+    st.markdown(f"""
+    <div style="display:flex; align-items:center; justify-content:space-between; padding-bottom:0.5rem; margin-top:1.5rem; border-bottom: 2px solid {color}; margin-bottom: 1rem;">
+        <span style="font-family:'Inter', sans-serif; font-size:0.85rem; font-weight: 700; letter-spacing:0.05em; text-transform:uppercase; color:{color}">{speaker}</span>
+        <span style="font-family:'Inter', sans-serif; font-size:0.75rem; color:var(--text-color); opacity:0.7; font-weight: 500;">{model_name}</span>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 💥 Streamlit Native Markdown rendering for the LLM output
+    st.markdown(text)
+    
+    # Render the Query via Streamlit native Markdown caption
+    if query:
+        st.caption(f"🔍 **Research query:** {query}")
 
 def render_verdict(text, model_name):
-    st.markdown(f"""<div class="verdict-card">
-        <div class="verdict-header"><span class="verdict-title">⚖ Final Verdict</span><span class="verdict-model">{model_name}</span></div>
-        <div class="verdict-body">{_esc(text)}</div></div>""", unsafe_allow_html=True)
+    # Output the header styling alone
+    st.markdown(f"""
+    <div style="display:flex; align-items:center; justify-content:space-between; padding-bottom:0.5rem; margin-top:2.5rem; border-bottom: 2px solid var(--primary-color); margin-bottom: 1rem;">
+        <span style="font-family:'Inter', sans-serif; font-size:0.85rem; font-weight: 700; letter-spacing:0.05em; text-transform:uppercase; color:var(--primary-color);">⚖ Final Verdict</span>
+        <span style="font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 500; color:var(--primary-color); opacity: 0.8;">{model_name}</span>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 💥 Streamlit Native Markdown rendering for Final Verdict Output
+    st.markdown(text)
 
 def render_round_divider(r, total):
     st.markdown(f'<div class="round-divider"><div class="round-divider-line"></div><div class="round-divider-label">Round {r} of {total}</div><div class="round-divider-line"></div></div>', unsafe_allow_html=True)
@@ -585,7 +587,11 @@ elif st.session_state.current_view == "history":
     if st.button("← Return to Setup"):
         st.session_state.current_view = "new"; st.rerun()
 
-    st.markdown(f'<div class="record-meta"><div class="record-date">{past["date"]}</div></div><div class="record-topic">{past["topic"]}</div>', unsafe_allow_html=True)
+    # 💥 Streamlit Native Markdown formatting for the Debate Topic / Question
+    st.markdown(f'<div class="record-meta"><div class="record-date">{past["date"]}</div></div>', unsafe_allow_html=True)
+    st.markdown(f"### Motion:\n{past['topic']}")
+    st.markdown("<br>", unsafe_allow_html=True)
+    
     tab1, tab2, tab3 = st.tabs(["Transcript", "Research Logs", "Follow-up"])
 
     with tab1:
