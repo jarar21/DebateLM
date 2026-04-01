@@ -33,6 +33,10 @@ AVAILABLE_MODELS =[
 ]
 DEFAULT_MODEL        = AVAILABLE_MODELS[0]
 MAX_DEBATES          = 5
+PARENT_CHUNK_SIZE    = 2000
+PARENT_CHUNK_OVERLAP = 200
+CHILD_CHUNK_SIZE     = 400
+CHILD_CHUNK_OVERLAP  = 50
 TOP_K_RETRIEVAL      = 15
 TOP_K_FINAL          = 8
 
@@ -180,14 +184,20 @@ def update_debate_chat(debate_id, record):
     if is_valid_supabase_guest(guest_id):
         supabase.table("debates").update({"history": record}).eq("debate_id", debate_id).execute()
 
-# --- RUN AUTO CLEANUP ---
-try: supabase.rpc("cleanup_old_guests").execute()
-except Exception: pass
+# --- RUN AUTO CLEANUP TO SAVE FREE TIER ---
+try:
+    supabase.rpc("cleanup_old_guests").execute()
+except Exception:
+    pass
 
+# Initialize session state
 ensure_guest_exists(guest_id)
-if "past_debates" not in st.session_state: st.session_state.past_debates = load_past_debates(guest_id)
-if "current_view" not in st.session_state: st.session_state.current_view = "new"
-if "selected_history" not in st.session_state: st.session_state.selected_history = None
+if "past_debates" not in st.session_state: 
+    st.session_state.past_debates = load_past_debates(guest_id)
+if "current_view" not in st.session_state: 
+    st.session_state.current_view = "new"
+if "selected_history" not in st.session_state: 
+    st.session_state.selected_history = None
 
 
 # --- 3. PINECONE INTEGRATION (Vector Database) ---
@@ -232,8 +242,10 @@ def process_documents(uploaded_files):
             with open(path, "wb") as f: 
                 f.write(uf.getbuffer())
             
-            if uf.name.lower().endswith(".pdf"): raw_docs.extend(PyMuPDFLoader(path).load())
-            else: raw_docs.extend(TextLoader(path).load())
+            if uf.name.lower().endswith(".pdf"):
+                raw_docs.extend(PyMuPDFLoader(path).load())
+            else:
+                raw_docs.extend(TextLoader(path).load())
                 
         # STEP 2: Splitting
         st.write("✂️ Slicing documents into AI-readable chunks...")
@@ -246,7 +258,8 @@ def process_documents(uploaded_files):
                 child.metadata["guest_id"] = guest_id
                 child.metadata["parent_text"] = parent.page_content 
                 child.metadata["source"] = parent.metadata.get("source", "unknown")
-                if "page" in child.metadata: del child.metadata["page"]
+                if "page" in child.metadata:
+                    del child.metadata["page"]
             child_docs.extend(children)
             
         # STEP 3: Embedding & Uploading with Live Progress
@@ -255,18 +268,22 @@ def process_documents(uploaded_files):
         
         vs = get_vectorstore()
         progress_bar = st.progress(0.0)
-        BATCH_SIZE = 150 
+        
+        BATCH_SIZE = 150 # Safe batch size for Gemini Free Tier
         total_batches = (total_chunks + BATCH_SIZE - 1) // BATCH_SIZE
         
         for i in range(0, total_chunks, BATCH_SIZE):
             batch = child_docs[i : i + BATCH_SIZE]
+            
+            # Update Progress Bar dynamically
             current_batch = (i // BATCH_SIZE) + 1
-            progress_bar.progress(min(current_batch / total_batches, 1.0), text=f"Uploading batch {current_batch} of {total_batches}...")
+            pct = min(current_batch / total_batches, 1.0)
+            progress_bar.progress(pct, text=f"Uploading batch {current_batch} of {total_batches}...")
             
             # The actual upload
             try:
                 vs.add_documents(batch)
-                time.sleep(0.5) 
+                time.sleep(0.5) # The necessary free-tier breather
             except Exception as e:
                 # Check if it's ACTUALLY a Rate Limit
                 if "429" in str(e) or "quota" in str(e).lower():
@@ -323,7 +340,7 @@ def retrieve_from_pinecone(query, llm):
                 parents.add(pt)
                 context_blocks.append(f"[Source: {doc.metadata.get('source','?')}]\n{pt}")
         return "\n\n---\n\n".join(context_blocks)
-    except Exception:
+    except Exception as e:
         return ""
 
 def serper_search(query, num_results=4):
@@ -348,7 +365,7 @@ def run_agent_turn(agent_idx, agent_data, topic, query, rag_context, web_evidenc
     if web_evidence: context_block += f"\nLIVE WEB EVIDENCE:\n{format_web_evidence(web_evidence)}\n"
     
     no_kb = not context_block.strip()
-    citation_rule = "Do NOT fabricate citations. Base arguments on logic and first principles." if no_kb else "Cite empirical claims using [Source: ...] or [Web: URL]."
+    citation_rule = "Do NOT fabricate citations. Base arguments on logic and first principles." if no_kb else "Cite empirical claims using[Source: ...] or [Web: URL]."
     
     system = (f"IDENTITY: {agent_data['instruction']}\n\n"
               f"You just researched: '{query}'. Based on this, you found:\n{context_block if context_block else 'No external documents or web evidence provided.'}\n\n"
@@ -362,7 +379,7 @@ def run_judge(topic, debate_history, judge_model):
     llm = get_llm(judge_model)
     return parse_response(llm.invoke([
         SystemMessage(content="You are the Final Synthesizer. Evaluate the debate purely on the transcripts and citations provided."),
-        HumanMessage(content=f"TOPIC: '{topic}'\n\nTRANSCRIPT:\n{chr(10).join(debate_history)}\n\nDeliver your FINAL VERDICT with Strongest Arguments, Weakest Arguments, and Synthesis. 400-600 words.")
+        HumanMessage(content=f"TOPIC: '{topic}'\n\nTRANSCRIPT:\n{chr(10).join(debate_history)}\n\nDeliver your FINAL Verdict with Strongest Arguments, Weakest Arguments, and Synthesis. 400-600 words.")
     ]))
 
 
@@ -459,21 +476,16 @@ if st.session_state.current_view == "new":
     if debates_used >= MAX_DEBATES:
         st.error(f"🛑 You have reached the {MAX_DEBATES} debate limit for this demo.")
         
-    
-    # --- LAUNCH & STOP BUTTONS ---
-    btn_col1, btn_col2 = st.columns(2)
-    with btn_col1:
-        launch = st.button("Launch Debate", type="primary", disabled=not can_debate, use_container_width=True)
-    with btn_col2:
-        stop_clicked = st.button("🛑 Stop Ongoing Debate", use_container_width=True)
-
-    if stop_clicked:
-        st.success("Debate interrupted. The partial transcript is safely saved in your History on the sidebar!")
+    # --- DYNAMIC LAUNCH/STOP BUTTON TRICK ---
+    button_placeholder = st.empty()
+    launch = button_placeholder.button("Launch Debate", type="primary", disabled=not can_debate, use_container_width=True)
 
     if launch and topic.strip():
-        
+        # IMMEDIATELY swap the button text so the user can click it to interrupt safely.
+        button_placeholder.button("🛑 Stop Ongoing Debate (Saves Progress)", type="primary", use_container_width=True, key="stop_btn")
+
         # 1. INITIAL SAVE: Create the debate instantly so it counts against quota and is preserved.
-        debate_history, agent_research_logs = [], []
+        debate_history, agent_research_logs = [],[]
         verdict_state = "⚠️ *Debate was interrupted early. No final synthesis available.*"
         
         current_debate = save_new_debate(topic, debate_history, verdict_state, agent_research_logs, judge_model, guest_id)
@@ -483,9 +495,11 @@ if st.session_state.current_view == "new":
             for i, ag in enumerate(agents_config):
                 agent_llm = get_llm(ag["model"])
                 with st.spinner(f"{AGENT_NAMES[i]} researching & formulating..."):
-                    # 1. Private Cloud RAG Retrieval (Pinecone)
+                    
                     rag_context = retrieve_from_pinecone(topic, agent_llm)
-                    web_results = serper_search(topic, 4) if use_web and r == 0 else []
+                    # 2. Web Retrieval (Serper)
+                    web_results = serper_search(topic, 4) if use_web and r == 0 else[]
+                    
                     argument = run_agent_turn(i, ag, topic, topic, rag_context, web_results, debate_history, r + 1)
                     
                     agent_research_logs.append({
