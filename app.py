@@ -198,6 +198,8 @@ if "current_view" not in st.session_state:
     st.session_state.current_view = "new"
 if "selected_history" not in st.session_state: 
     st.session_state.selected_history = None
+if "uploaded_file_names" not in st.session_state: 
+    st.session_state.uploaded_file_names = []
 
 
 # --- 3. PINECONE INTEGRATION (Vector Database) ---
@@ -223,6 +225,7 @@ def get_vectorstore():
     )
 
 def process_documents(uploaded_files):
+    if not uploaded_files: return 0
     TEMP_DIR = "/tmp/debatelm_docs"
     os.makedirs(TEMP_DIR, exist_ok=True)
     
@@ -231,75 +234,81 @@ def process_documents(uploaded_files):
     p_split = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=400)
     c_split = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=150)
     
-    # --- THE UX UPGRADE: Streamlit Status Container ---
-    with st.status("Processing Knowledge Base...", expanded=True) as status_box:
+    # --- SIMPLE PROGRESS BAR ---
+    progress_bar = st.progress(0.0, text="Reading files...")
+    
+    raw_docs = []
+    for uf in uploaded_files:
+        path = os.path.join(TEMP_DIR, uf.name)
+        with open(path, "wb") as f: 
+            f.write(uf.getbuffer())
         
-        # STEP 1: Reading
-        st.write("📄 Extracting text from files...")
-        raw_docs = []
-        for uf in uploaded_files:
-            path = os.path.join(TEMP_DIR, uf.name)
-            with open(path, "wb") as f: 
-                f.write(uf.getbuffer())
+        file_docs = []
+        if uf.name.lower().endswith(".pdf"):
+            file_docs = PyMuPDFLoader(path).load()
+        else:
+            file_docs = TextLoader(path).load()
             
-            if uf.name.lower().endswith(".pdf"):
-                raw_docs.extend(PyMuPDFLoader(path).load())
-            else:
-                raw_docs.extend(TextLoader(path).load())
-                
-        # STEP 2: Splitting
-        st.write("✂️ Slicing documents into AI-readable chunks...")
-        parent_docs = p_split.split_documents(raw_docs)
-        child_docs = []
-        
-        for parent in parent_docs:
-            children = c_split.split_documents([parent])
-            for child in children:
-                child.metadata["guest_id"] = guest_id
-                child.metadata["parent_text"] = parent.page_content 
-                child.metadata["source"] = parent.metadata.get("source", "unknown")
-                if "page" in child.metadata:
-                    del child.metadata["page"]
-            child_docs.extend(children)
+        # INJECT FILE NAME FOR DELETION TRACKING LATER
+        for d in file_docs:
+            d.metadata["file_name"] = uf.name
             
-        # STEP 3: Embedding & Uploading with Live Progress
-        total_chunks = len(child_docs)
-        st.write(f"🧠 Vectorizing and uploading {total_chunks} chunks to Pinecone...")
-        
-        vs = get_vectorstore()
-        progress_bar = st.progress(0.0)
-        
-        BATCH_SIZE = 150 # Safe batch size for Gemini Free Tier
-        total_batches = (total_chunks + BATCH_SIZE - 1) // BATCH_SIZE
-        
-        for i in range(0, total_chunks, BATCH_SIZE):
-            batch = child_docs[i : i + BATCH_SIZE]
+        raw_docs.extend(file_docs)
             
-            # Update Progress Bar dynamically
-            current_batch = (i // BATCH_SIZE) + 1
-            pct = min(current_batch / total_batches, 1.0)
-            progress_bar.progress(pct, text=f"Uploading batch {current_batch} of {total_batches}...")
-            
-            # The actual upload
-            try:
-                vs.add_documents(batch)
-                time.sleep(0.5) # The necessary free-tier breather
-            except Exception as e:
-                # Check if it's ACTUALLY a Rate Limit
-                if "429" in str(e) or "quota" in str(e).lower():
-                    st.write("⚠️ Google rate limit hit, taking a 10-second breather...")
-                    time.sleep(10)
-                    vs.add_documents(batch)
-                else:
-                    # If it's an Unauthorized or missing index error, stop and show the real error!
-                    st.error(f"❌ Database Error: {str(e)}")
-                    raise e
-                
-        # Finish gracefully
+    progress_bar.progress(0.2, text="Slicing chunks...")
+    parent_docs = p_split.split_documents(raw_docs)
+    child_docs = []
+    
+    for parent in parent_docs:
+        children = c_split.split_documents([parent])
+        for child in children:
+            child.metadata["guest_id"] = guest_id
+            child.metadata["file_name"] = parent.metadata.get("file_name", "unknown")
+            child.metadata["parent_text"] = parent.page_content 
+            child.metadata["source"] = parent.metadata.get("source", "unknown")
+            if "page" in child.metadata: del child.metadata["page"]
+        child_docs.extend(children)
+        
+    total_chunks = len(child_docs)
+    if total_chunks == 0:
         progress_bar.empty()
-        status_box.update(label="✅ Documents successfully added to Cloud DB!", state="complete", expanded=False)
+        return 0
         
+    vs = get_vectorstore()
+    BATCH_SIZE = 150 
+    total_batches = (total_chunks + BATCH_SIZE - 1) // BATCH_SIZE
+    
+    for i in range(0, total_chunks, BATCH_SIZE):
+        batch = child_docs[i : i + BATCH_SIZE]
+        
+        current_batch = (i // BATCH_SIZE) + 1
+        pct = 0.2 + (0.8 * (current_batch / total_batches))
+        progress_bar.progress(pct, text=f"Uploading batch {current_batch} of {total_batches} to Pinecone...")
+        
+        try:
+            vs.add_documents(batch)
+            time.sleep(0.5) 
+        except Exception as e:
+            if "429" in str(e) or "quota" in str(e).lower():
+                time.sleep(10)
+                vs.add_documents(batch)
+            else:
+                st.error(f"❌ Database Error: {str(e)}")
+                raise e
+            
+    # Cleanup progress bar automatically when done
+    progress_bar.empty()
     return total_chunks
+
+# --- AUTOMATIC DELETION ---
+def delete_documents(file_names):
+    index = pc.Index(PINECONE_INDEX_NAME)
+    for fname in file_names:
+        try:
+            # Tell Pinecone to purge chunks belonging to this file and this guest
+            index.delete(filter={"file_name": {"$eq": fname}, "guest_id": {"$eq": guest_id}})
+        except Exception as e:
+            pass
 
 def parse_response(response) -> str:
     c = response.content
@@ -417,14 +426,26 @@ with st.sidebar:
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sb-section"><div class="sb-label">Knowledge Base</div>', unsafe_allow_html=True)
-    with st.expander("Upload Documents to DB", expanded=True):
-        more_files = st.file_uploader("PDFs / TXT", type=["pdf","txt"], accept_multiple_files=True, label_visibility="collapsed")
-        if st.button("Add to Cloud DB", use_container_width=True):
-            if more_files:
-                # We remove the boring st.spinner because the new process_documents function 
-                # handles the beautiful status UI internally!
-                chunks_processed = process_documents(more_files)
-                st.toast(f"🎉 Successfully indexed {chunks_processed} chunks!")
+    more_files = st.file_uploader("Upload Documents (Auto-Syncs with Database)", type=["pdf","txt"], accept_multiple_files=True)
+    
+    # Calculate difference between current files and state to determine added/removed files
+    current_files_dict = {f.name: f for f in (more_files or [])}
+    current_file_names = list(current_files_dict.keys())
+    
+    added_names = [name for name in current_file_names if name not in st.session_state.uploaded_file_names]
+    removed_names = [name for name in st.session_state.uploaded_file_names if name not in current_file_names]
+    
+    if added_names:
+        files_to_process = [current_files_dict[name] for name in added_names]
+        process_documents(files_to_process)
+        st.toast(f"✅ Auto-synced {len(added_names)} file(s) to Pinecone!")
+        
+    if removed_names:
+        delete_documents(removed_names)
+        st.toast(f"🗑️ Removed {len(removed_names)} file(s) from Pinecone!")
+        
+    # Lock the state
+    st.session_state.uploaded_file_names = current_file_names
     st.markdown('</div>', unsafe_allow_html=True)
 
     debates_used = get_quota(guest_id)
@@ -566,4 +587,4 @@ elif st.session_state.current_view == "history":
                     ans = parse_response(get_llm(past.get("judge_model", DEFAULT_MODEL)).invoke(msgs))
                     st.markdown(ans)
             past["post_chat"].append({"role": "assistant", "content": ans})
-            update_debate_chat(past["id"], past) # Syncs chat follow-up to Supabase
+            update_debate_chat(past["id"], past)
