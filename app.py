@@ -349,20 +349,34 @@ with st.sidebar:
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sb-section"><div class="sb-label">Knowledge Base</div>', unsafe_allow_html=True)
-    more_files = st.file_uploader("Upload Documents (Auto-Syncs with Database)", type=["pdf","txt"], accept_multiple_files=True)
     
-    current_file_names = list({f.name: f for f in (more_files or [])}.keys())
-    added_names = [n for n in current_file_names if n not in st.session_state.uploaded_file_names]
-    removed_names = [n for n in st.session_state.uploaded_file_names if n not in current_file_names]
+    # 🔥 INDUSTRY-GRADE STATE: Fetch persistent file list from Supabase Cloud
+    saved_files = prefs.get("saved_files", [])
+    if saved_files:
+        st.markdown('<div style="font-size:0.75rem; font-weight:600; margin-bottom:0.5rem; opacity:0.8;">Active Project Files:</div>', unsafe_allow_html=True)
+        for fname in saved_files:
+            c1, c2 = st.columns([0.85, 0.15])
+            c1.markdown(f"<div style='font-size:0.8rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;'>📄 {fname}</div>", unsafe_allow_html=True)
+            if c2.button("🗑️", key=f"del_{fname}", help=f"Remove {fname}"):
+                delete_documents([fname])
+                saved_files.remove(fname)
+                prefs["saved_files"] = saved_files
+                save_preferences(guest_id, prefs)
+                st.rerun()
+                
+    st.markdown("<br>", unsafe_allow_html=True)
+    new_files = st.file_uploader("Add to Knowledge Base", type=["pdf","txt"], accept_multiple_files=True)
     
-    if added_names:
-        process_documents([f for f in more_files if f.name in added_names])
-        st.toast(f"✅ Auto-synced {len(added_names)} file(s)!")
-    if removed_names:
-        delete_documents(removed_names)
-        st.toast(f"🗑️ Removed {len(removed_names)} file(s)!")
-        
-    st.session_state.uploaded_file_names = current_file_names
+    if new_files:
+        files_to_process = [f for f in new_files if f.name not in saved_files]
+        if files_to_process:
+            process_documents(files_to_process)
+            saved_files.extend([f.name for f in files_to_process])
+            prefs["saved_files"] = saved_files
+            save_preferences(guest_id, prefs)
+            st.toast(f"✅ Synced {len(files_to_process)} file(s) to Cloud!")
+            st.rerun()
+
     st.markdown('</div>', unsafe_allow_html=True)
 
     pct = int(min(debates_used / MAX_DEBATES, 1.0) * 100)
