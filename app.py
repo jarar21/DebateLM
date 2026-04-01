@@ -1,5 +1,5 @@
 import streamlit as st
-import os, json, datetime, uuid, hashlib, time, re
+import os, json, datetime, uuid, hashlib, time, re, tempfile
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from pinecone import Pinecone
@@ -91,7 +91,7 @@ supabase = init_supabase()
 
 def is_valid_supabase_guest(gid: str) -> bool:
     if not gid: return False
-    return bool(re.match(r"^guest_[a-z0-9]{20,}$", gid))
+    return bool(re.match(r"^guest_[a-z0-9]{16,}$", gid))
 
 # 🔥 NEW: Merged function to get guest quota AND preferences efficiently
 def get_guest_session_data(gid):
@@ -193,18 +193,23 @@ def get_vectorstore():
 
 def process_documents(uploaded_files):
     if not uploaded_files: return 0
-    TEMP_DIR = "/tmp/debatelm_docs"
-    os.makedirs(TEMP_DIR, exist_ok=True)
     p_split = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=400)
     c_split = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=150)
     progress_bar = st.progress(0.0, text="Reading files...")
     raw_docs = []
     for uf in uploaded_files:
-        path = os.path.join(TEMP_DIR, uf.name)
-        with open(path, "wb") as f: f.write(uf.getbuffer())
-        file_docs = PyMuPDFLoader(path).load() if uf.name.lower().endswith(".pdf") else TextLoader(path).load()
-        for d in file_docs: d.metadata["file_name"] = uf.name
-        raw_docs.extend(file_docs)
+        suffix = ".pdf" if uf.name.lower().endswith(".pdf") else ".txt"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
+            tmp_file.write(uf.getbuffer())
+            tmp_path = tmp_file.name
+        
+        try:
+            file_docs = PyMuPDFLoader(tmp_path).load() if suffix == ".pdf" else TextLoader(tmp_path).load()
+            for d in file_docs: d.metadata["file_name"] = uf.name
+            raw_docs.extend(file_docs)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
             
     parent_docs = p_split.split_documents(raw_docs)
     child_docs = []
