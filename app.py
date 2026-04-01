@@ -116,19 +116,34 @@ def init_supabase() -> Client:
 
 supabase = init_supabase()
 
+# NEW: Validation Guard
+def is_valid_supabase_guest(gid: str) -> bool:
+    """
+    Only allow guest_ids strictly matching the Javascript Math.random format.
+    Ensures guest_id has at least 20 random alphanumeric chars after "guest_" (Total length >= 26).
+    Prevents saving the shorter Streamlit fallback format to Supabase.
+    """
+    if not gid: return False
+    return bool(re.match(r"^guest_[a-z0-9]{20,}$", gid))
+
 def ensure_guest_exists(gid):
-    # Upsert the guest session
-    supabase.table("guest_sessions").upsert({"guest_id": gid}).execute()
+    if is_valid_supabase_guest(gid):
+        supabase.table("guest_sessions").upsert({"guest_id": gid}).execute()
 
 def get_quota(gid):
+    if not is_valid_supabase_guest(gid): 
+        return 0
     res = supabase.table("guest_sessions").select("debates_run").eq("guest_id", gid).execute()
     return res.data[0]["debates_run"] if res.data else 0
 
 def increment_quota(gid):
-    current = get_quota(gid)
-    supabase.table("guest_sessions").update({"debates_run": current + 1, "last_active": "now()"}).eq("guest_id", gid).execute()
+    if is_valid_supabase_guest(gid):
+        current = get_quota(gid)
+        supabase.table("guest_sessions").update({"debates_run": current + 1, "last_active": "now()"}).eq("guest_id", gid).execute()
 
 def load_past_debates(gid):
+    if not is_valid_supabase_guest(gid): 
+        return []
     res = supabase.table("debates").select("*").eq("guest_id", gid).order("created_at", desc=True).execute()
     debates = []
     for row in res.data:
@@ -149,20 +164,25 @@ def save_new_debate(topic, history, verdict, research_logs, judge_model, gid):
         "post_chat":[], 
         "judge_model": judge_model
     }
-    # Save to Supabase
-    supabase.table("debates").insert({
-        "debate_id": debate_id,
-        "guest_id": gid,
-        "topic": topic,
-        "verdict": verdict,
-        "history": record
-    }).execute()
+    
+    # Save to Supabase ONLY if valid guest ID
+    if is_valid_supabase_guest(gid):
+        supabase.table("debates").insert({
+            "debate_id": debate_id,
+            "guest_id": gid,
+            "topic": topic,
+            "verdict": verdict,
+            "history": record
+        }).execute()
+        increment_quota(gid)
+        
     st.session_state.past_debates.insert(0, record)
     increment_quota(gid)
     return record
 
 def update_debate_chat(debate_id, record):
-    supabase.table("debates").update({"history": record}).eq("debate_id", debate_id).execute()
+    if is_valid_supabase_guest(guest_id):
+        supabase.table("debates").update({"history": record}).eq("debate_id", debate_id).execute()
 
 # --- RUN AUTO CLEANUP TO SAVE FREE TIER ---
 try:
@@ -242,7 +262,7 @@ def process_documents(uploaded_files):
     for i in range(0, len(child_docs), BATCH_SIZE):
         batch = child_docs[i : i + BATCH_SIZE]
         vs.add_documents(batch)
-        time.sleep(0.2) # Reduced artificial delay from 1 full second down to 0.2s
+        time.sleep(0.2)
         
     return len(child_docs)
 
