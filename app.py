@@ -140,6 +140,7 @@ def load_past_debates(gid):
     except Exception:
         return []
 
+# 🔥 FIX: Removed the duplicate increment_quota call
 def save_new_debate(topic, history, verdict, research_logs, judge_model, gid):
     debate_id = str(uuid.uuid4())
     record = {
@@ -153,10 +154,11 @@ def save_new_debate(topic, history, verdict, research_logs, judge_model, gid):
                 "debate_id": debate_id, "guest_id": gid, "topic": topic,
                 "verdict": verdict, "history": record
             }).execute()
-            increment_quota(gid)
-        except Exception: pass
+            increment_quota(gid) # ✅ Only called ONCE here
+        except Exception as e: 
+            print("DB Error:", e)
+            
     st.session_state.past_debates.insert(0, record)
-    increment_quota(gid)
     return record
 
 def update_debate_chat(debate_id, record):
@@ -251,7 +253,7 @@ def get_llm(model: str):
 
 def gemini_rerank(query, candidates, llm):
     if not candidates: return candidates
-    numbered = "\n".join(f"{i+1}. {doc.page_content[:300]}" for i, doc in enumerate(candidates))
+    numbered = "\n".join(f"{i+1}. {doc.page_content[:300]}" for i, enumerate in enumerate(candidates))
     try:
         raw = parse_response(llm.invoke(f"Rank by relevance. Reply ONLY with comma-separated numbers.\nQuery: {query}\n\n{numbered}")).strip()
         indices =[int(x.strip())-1 for x in raw.split(",") if x.strip().isdigit()]
@@ -324,7 +326,7 @@ def render_round_divider(r, total):
     st.markdown(f'<div class="round-divider"><div class="round-divider-line"></div><div class="round-divider-label">Round {r} of {total}</div><div class="round-divider-line"></div></div>', unsafe_allow_html=True)
 
 # --- SIDEBAR & QUOTA UI ---
-prefs = st.session_state.user_prefs # 🔥 Load cached preferences for UI injection
+prefs = st.session_state.user_prefs 
 
 with st.sidebar:
     st.markdown('<div class="sb-logo">⚖ DebateLM</div><div class="sb-logo-sub">The Open-Source NotebookLM Alternative</div>', unsafe_allow_html=True)
@@ -374,7 +376,7 @@ if st.session_state.current_view == "new":
 
     st.markdown('<div class="section-hd"><div class="section-hd-num">01</div><div><div class="section-hd-title">CONFIGURE DEBATERS</div></div></div>', unsafe_allow_html=True)
     agents_config = []
-    saved_agents = prefs.get("agents", []) # 🔥 Load cached agents
+    saved_agents = prefs.get("agents", []) 
     
     cols = st.columns(min(num_agents, 3), gap="small")
     for i in range(num_agents):
