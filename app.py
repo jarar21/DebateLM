@@ -162,37 +162,40 @@ def save_new_debate(topic, history, verdict, research_logs, judge_model, gid):
         "research_logs": research_logs,
         "history": history, 
         "verdict": verdict, 
-        "post_chat":[], 
+        "post_chat": [], 
         "judge_model": judge_model
     }
     
-    # Save to Supabase ONLY if valid guest ID
     if is_valid_supabase_guest(gid):
         try:
+            # Notice how we save the EXACT record to JSON.
+            # You should rename the "history" column in Supabase to "state_json" 
+            # to prevent confusion with the actual debate transcript.
             supabase.table("debates").insert({
                 "debate_id": debate_id,
                 "guest_id": gid,
                 "topic": topic,
                 "verdict": verdict,
-                "history": record
+                "history": record  # We keep this for backward compatibility with your DB
             }).execute()
             increment_quota(gid)
         except Exception as e:
-            pass
-
+            print(f"Supabase Insert Error: {e}")
+            
     st.session_state.past_debates.insert(0, record)
+    increment_quota(gid)
     return record
 
 def update_debate_chat(debate_id, record):
     if is_valid_supabase_guest(guest_id):
         try:
-            # FIX: Explicitly update BOTH the history JSON column and the root verdict column
+            # Clean sync: Update the JSON state and the root text column simultaneously
             supabase.table("debates").update({
                 "history": record,
                 "verdict": record.get("verdict", "")
             }).eq("debate_id", debate_id).execute()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Supabase Update Error: {e}")
 
 try:
     supabase.rpc("cleanup_old_guests").execute()
@@ -585,22 +588,27 @@ if st.session_state.current_view == "new":
                 st.session_state.past_debates[0] = dict(current_debate)
                 update_debate_chat(current_debate["id"], current_debate)
 
+        # --- DELIBERATION PHASE ---
         st.markdown('<div class="round-divider"><div class="round-divider-line"></div><div class="round-divider-label">Deliberation</div><div class="round-divider-line"></div></div>', unsafe_allow_html=True)
         with st.spinner(f"Final Synthesizer ({judge_model}) deliberating..."):
             final_verdict_text = run_judge(topic, debate_history, judge_model)
             
         render_verdict(final_verdict_text, judge_model)
 
-        # FIX: Explicit dictionary updates so Streamlit DOES NOT wipe it on re-render.
-        final_debate = dict(current_debate)
-        final_debate["verdict"] = final_verdict_text
+        # 1. Update the dictionary cleanly
+        current_debate["verdict"] = final_verdict_text
+        current_debate["history"] = debate_history
+        current_debate["research_logs"] = agent_research_logs
         
-        st.session_state.past_debates[0] = final_debate
-        st.session_state.selected_history = final_debate
-        update_debate_chat(final_debate["id"], final_debate)
+        # 2. Push to Supabase
+        update_debate_chat(current_debate["id"], current_debate)
 
-        st.session_state.current_view = "history"
+        # 3. Update Streamlit State EXACTLY ONCE
+        st.session_state.past_debates[0] = current_debate
         st.session_state.selected_history = current_debate
+        st.session_state.current_view = "history"
+        
+        # 4. Rerun without overwriting the state!
         st.rerun()
 
 elif st.session_state.current_view == "history":
