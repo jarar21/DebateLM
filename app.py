@@ -257,11 +257,26 @@ def parse_response(response):
 def get_llm(model: str):
     return ChatGoogleGenerativeAI(model=model, google_api_key=GEMINI_API_KEY, temperature=0.7)
 
-def gemini_rerank(query, candidates, llm):
+def generate_agent_queries(topic, agents_config, llm):
+    try:
+        prompt = f"Topic: '{topic}'\nGenerate a short Google search query (under 8 words) for each agent persona to find evidence supporting their specific view.\n\n"
+        for i, ag in enumerate(agents_config):
+            prompt += f"Agent {i} Persona: {ag['instruction']}\n"
+        prompt += "\nReturn ONLY a JSON list of strings, e.g. [\"query1\", \"query2\"]."
+        raw = parse_response(llm.invoke([SystemMessage(content="You are a research planner."), HumanMessage(content=prompt)]))
+        raw_json = re.search(r'\[.*\]', raw.replace('\n', ''))
+        if raw_json:
+            queries = json.loads(raw_json.group())
+            if len(queries) == len(agents_config): return queries
+    except Exception as e: print("Query Gen Error:", e)
+    return [topic] * len(agents_config)
+
+def gemini_rerank(query, candidates, llm, persona=None):
     if not candidates: return candidates
     numbered = "\n".join(f"{i+1}. {doc.page_content[:300]}" for i, enumerate in enumerate(candidates))
+    rank_prompt = f"Rank by relevance to the query AND this specific persona: '{persona}'. Reply ONLY with comma-separated numbers.\nQuery: {query}\n\n{numbered}" if persona else f"Rank by relevance. Reply ONLY with comma-separated numbers.\nQuery: {query}\n\n{numbered}"
     try:
-        raw = parse_response(llm.invoke(f"Rank by relevance. Reply ONLY with comma-separated numbers.\nQuery: {query}\n\n{numbered}")).strip()
+        raw = parse_response(llm.invoke(rank_prompt)).strip()
         indices =[int(x.strip())-1 for x in raw.split(",") if x.strip().isdigit()]
         reranked = [candidates[i] for i in indices if 0 <= i < len(candidates)]
         seen = set(id(d) for d in reranked)
@@ -270,10 +285,10 @@ def gemini_rerank(query, candidates, llm):
         return reranked[:TOP_K_FINAL]
     except Exception: return candidates[:TOP_K_FINAL]
 
-def retrieve_from_pinecone(query, llm):
+def retrieve_from_pinecone(query, llm, persona=None):
     try:
         results = get_vectorstore().similarity_search(query, k=TOP_K_RETRIEVAL, filter={"guest_id": guest_id})
-        reranked = gemini_rerank(query, results, llm)
+        reranked = gemini_rerank(query, results, llm, persona)
         parents, context_blocks = set(), []
         for doc in reranked:
             pt = doc.metadata.get("parent_text", doc.page_content)
@@ -421,30 +436,35 @@ if st.session_state.current_view == "new":
         debate_history, agent_research_logs = [],[]
         current_debate = save_new_debate(topic, debate_history, "⚠️ *Debate interrupted. No synthesis.*", agent_research_logs, judge_model, guest_id)
 
-        # 🔥 SPEED FIX: Fetch global web results ONCE for the whole debate to save time and API credits
-        with st.spinner("Fetching global web context..."):
-            global_web_results = serper_search(topic, 4) if use_web else []
+        # 🔥 QUALITY FIX: Generate tailored search queries based on agent personas
+        with st.spinner("Formulating personalized research strategies..."):
+            agent_queries = generate_agent_queries(topic, agents_config, get_llm(judge_model))
 
         for r in range(num_rounds):
             render_round_divider(r + 1, num_rounds)
             
-            # 🔥 SPEED FIX: Pre-fetch RAG for all agents in parallel to eliminate the bottleneck
+            # 🔥 SPEED & QUALITY FIX: Pre-fetch tailored RAG and Web Context in parallel
             with st.spinner(f"Round {r+1} Intelligence Gathering..."):
                 rag_contexts = {}
-                with ThreadPoolExecutor(max_workers=min(num_agents, 5)) as executor:
-                    futures = {executor.submit(retrieve_from_pinecone, topic, get_llm(ag["model"])): i for i, ag in enumerate(agents_config)}
-                    for future in as_completed(futures):
-                        rag_contexts[futures[future]] = future.result()
+                web_contexts = {}
+                with ThreadPoolExecutor(max_workers=min(num_agents * 2, 10)) as executor:
+                    futures_rag = {executor.submit(retrieve_from_pinecone, agent_queries[i], get_llm(ag["model"]), ag["instruction"]): i for i, ag in enumerate(agents_config)}
+                    futures_web = {executor.submit(serper_search, agent_queries[i], 3): i for i, ag in enumerate(agents_config)} if use_web and r == 0 else {}
+                    
+                    for future in as_completed(futures_rag):
+                        rag_contexts[futures_rag[future]] = future.result()
+                    for future in as_completed(futures_web):
+                        web_contexts[futures_web[future]] = future.result()
 
             for i, ag in enumerate(agents_config):
                 agent_llm = get_llm(ag["model"])
                 with st.spinner(f"{AGENT_NAMES[i]} formulating argument..."):
                     rag_context = rag_contexts.get(i, "")
-                    web_results = global_web_results if r == 0 else []
-                    argument = run_agent_turn(i, ag, topic, topic, rag_context, web_results, debate_history, r + 1)
-                    agent_research_logs.append({"round": r + 1, "agent": AGENT_NAMES[i], "query": topic, "web": web_results, "rag_found": bool(rag_context)})
+                    web_results = web_contexts.get(i, []) if r == 0 else []
+                    argument = run_agent_turn(i, ag, topic, agent_queries[i], rag_context, web_results, debate_history, r + 1)
+                    agent_research_logs.append({"round": r + 1, "agent": AGENT_NAMES[i], "query": agent_queries[i], "web": web_results, "rag_found": bool(rag_context)})
                     
-                render_argument(AGENT_NAMES[i], ag["model"], argument, AGENT_COLORS[i % len(AGENT_COLORS)], topic)
+                render_argument(AGENT_NAMES[i], ag["model"], argument, AGENT_COLORS[i % len(AGENT_COLORS)], agent_queries[i])
                 debate_history.append(f"{AGENT_NAMES[i]}: {argument}")
                 
                 current_debate["history"] = list(debate_history)
