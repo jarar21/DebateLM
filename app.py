@@ -206,7 +206,10 @@ def process_documents(uploaded_files):
         
         try:
             file_docs = PyMuPDFLoader(tmp_path).load() if suffix == ".pdf" else TextLoader(tmp_path).load()
-            for d in file_docs: d.metadata["file_name"] = uf.name
+            for d in file_docs:
+                d.metadata["file_name"] = uf.name
+                # 🔥 OVERRIDE the temporary file path with the real file name
+                d.metadata["source"] = uf.name
             raw_docs.extend(file_docs)
         finally:
             if os.path.exists(tmp_path):
