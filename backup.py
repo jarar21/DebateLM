@@ -1,6 +1,5 @@
 import streamlit as st
-import os, json, datetime, uuid, hashlib, time, re, tempfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import os, json, datetime, uuid, hashlib, time, re
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from pinecone import Pinecone
@@ -194,26 +193,18 @@ def get_vectorstore():
 
 def process_documents(uploaded_files):
     if not uploaded_files: return 0
+    TEMP_DIR = "/tmp/debatelm_docs"
+    os.makedirs(TEMP_DIR, exist_ok=True)
     p_split = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=400)
     c_split = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=150)
     progress_bar = st.progress(0.0, text="Reading files...")
     raw_docs = []
     for uf in uploaded_files:
-        suffix = ".pdf" if uf.name.lower().endswith(".pdf") else ".txt"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-            tmp_file.write(uf.getbuffer())
-            tmp_path = tmp_file.name
-        
-        try:
-            file_docs = PyMuPDFLoader(tmp_path).load() if suffix == ".pdf" else TextLoader(tmp_path).load()
-            for d in file_docs:
-                d.metadata["file_name"] = uf.name
-                # 🔥 OVERRIDE the temporary file path with the real file name
-                d.metadata["source"] = uf.name
-            raw_docs.extend(file_docs)
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+        path = os.path.join(TEMP_DIR, uf.name)
+        with open(path, "wb") as f: f.write(uf.getbuffer())
+        file_docs = PyMuPDFLoader(path).load() if uf.name.lower().endswith(".pdf") else TextLoader(path).load()
+        for d in file_docs: d.metadata["file_name"] = uf.name
+        raw_docs.extend(file_docs)
             
     parent_docs = p_split.split_documents(raw_docs)
     child_docs = []
@@ -235,12 +226,12 @@ def process_documents(uploaded_files):
     
     for i in range(0, total_chunks, BATCH_SIZE):
         batch = child_docs[i : i + BATCH_SIZE]
-        progress_bar.progress(0.2 + (0.8 * ((i // BATCH_SIZE + 1) / total_batches)), text=f"Uploading batch {(i // BATCH_SIZE) + 1} of {total_batches}...")
+        progress_bar.progress(0.2 + (0.8 * ((i // BATCH_SIZE + 1) / total_batches)), text=f"Uploading batch {(i // BATCH_SIZE) + 1}...")
         try:
             vs.add_documents(batch)
+            time.sleep(0.5) 
         except Exception:
-            progress_bar.progress(0.2 + (0.8 * ((i // BATCH_SIZE + 1) / total_batches)), text=f"⚠️ Network hiccup. Retrying batch {(i // BATCH_SIZE) + 1} in 2s...")
-            time.sleep(2)
+            time.sleep(5)
             vs.add_documents(batch)
             
     progress_bar.empty()
@@ -260,23 +251,25 @@ def parse_response(response):
 def get_llm(model: str):
     return ChatGoogleGenerativeAI(model=model, google_api_key=GEMINI_API_KEY, temperature=0.7)
 
-def generate_agent_query(topic, agent_config):
+def gemini_rerank(query, candidates, llm):
+    if not candidates: return candidates
+    numbered = "\n".join(f"{i+1}. {doc.page_content[:300]}" for i, enumerate in enumerate(candidates))
     try:
-        agent_llm = get_llm(agent_config["model"])
-        prompt = f"Topic: '{topic}'\nYour Identity/Persona: {agent_config['instruction']}\n\nBased ONLY on your specific persona and the topic, what is the single most effective Google search query (under 8 words) you would run right now to find evidence supporting your unique perspective? Return ONLY the search string, no quotes, no explanation."
-        raw = parse_response(agent_llm.invoke([SystemMessage(content="You are an expert researcher defining your own strategy."), HumanMessage(content=prompt)])).strip().replace('"', '')
-        return raw if raw else topic
-    except Exception as e:
-        print(f"Query Gen Error for agent {agent_config.get('id', 'unknown')}:", e)
-        return topic
+        raw = parse_response(llm.invoke(f"Rank by relevance. Reply ONLY with comma-separated numbers.\nQuery: {query}\n\n{numbered}")).strip()
+        indices =[int(x.strip())-1 for x in raw.split(",") if x.strip().isdigit()]
+        reranked = [candidates[i] for i in indices if 0 <= i < len(candidates)]
+        seen = set(id(d) for d in reranked)
+        for d in candidates:
+            if id(d) not in seen: reranked.append(d)
+        return reranked[:TOP_K_FINAL]
+    except Exception: return candidates[:TOP_K_FINAL]
 
-def retrieve_from_pinecone(query):
+def retrieve_from_pinecone(query, llm):
     try:
-        # We trust Gemini's 1M-token context window to find the needle in the haystack.
-        # Bypass the slow, expensive LLM reranking and just pull the top 20 raw chunks.
-        results = get_vectorstore().similarity_search(query, k=20, filter={"guest_id": guest_id})
+        results = get_vectorstore().similarity_search(query, k=TOP_K_RETRIEVAL, filter={"guest_id": guest_id})
+        reranked = gemini_rerank(query, results, llm)
         parents, context_blocks = set(), []
-        for doc in results:
+        for doc in reranked:
             pt = doc.metadata.get("parent_text", doc.page_content)
             if pt not in parents:
                 parents.add(pt)
@@ -349,34 +342,20 @@ with st.sidebar:
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sb-section"><div class="sb-label">Knowledge Base</div>', unsafe_allow_html=True)
+    more_files = st.file_uploader("Upload Documents (Auto-Syncs with Database)", type=["pdf","txt"], accept_multiple_files=True)
     
-    # 🔥 INDUSTRY-GRADE STATE: Fetch persistent file list from Supabase Cloud
-    saved_files = prefs.get("saved_files", [])
-    if saved_files:
-        st.markdown('<div style="font-size:0.75rem; font-weight:600; margin-bottom:0.5rem; opacity:0.8;">Active Project Files:</div>', unsafe_allow_html=True)
-        for fname in saved_files:
-            c1, c2 = st.columns([0.85, 0.15])
-            c1.markdown(f"<div style='font-size:0.8rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;'>📄 {fname}</div>", unsafe_allow_html=True)
-            if c2.button("🗑️", key=f"del_{fname}", help=f"Remove {fname}"):
-                delete_documents([fname])
-                saved_files.remove(fname)
-                prefs["saved_files"] = saved_files
-                save_preferences(guest_id, prefs)
-                st.rerun()
-                
-    st.markdown("<br>", unsafe_allow_html=True)
-    new_files = st.file_uploader("Add to Knowledge Base", type=["pdf","txt"], accept_multiple_files=True)
+    current_file_names = list({f.name: f for f in (more_files or [])}.keys())
+    added_names = [n for n in current_file_names if n not in st.session_state.uploaded_file_names]
+    removed_names = [n for n in st.session_state.uploaded_file_names if n not in current_file_names]
     
-    if new_files:
-        files_to_process = [f for f in new_files if f.name not in saved_files]
-        if files_to_process:
-            process_documents(files_to_process)
-            saved_files.extend([f.name for f in files_to_process])
-            prefs["saved_files"] = saved_files
-            save_preferences(guest_id, prefs)
-            st.toast(f"✅ Synced {len(files_to_process)} file(s) to Cloud!")
-            st.rerun()
-
+    if added_names:
+        process_documents([f for f in more_files if f.name in added_names])
+        st.toast(f"✅ Auto-synced {len(added_names)} file(s)!")
+    if removed_names:
+        delete_documents(removed_names)
+        st.toast(f"🗑️ Removed {len(removed_names)} file(s)!")
+        
+    st.session_state.uploaded_file_names = current_file_names
     st.markdown('</div>', unsafe_allow_html=True)
 
     pct = int(min(debates_used / MAX_DEBATES, 1.0) * 100)
@@ -436,39 +415,17 @@ if st.session_state.current_view == "new":
         debate_history, agent_research_logs = [],[]
         current_debate = save_new_debate(topic, debate_history, "⚠️ *Debate interrupted. No synthesis.*", agent_research_logs, judge_model, guest_id)
 
-        # 🔥 AUTONOMOUS RESEARCH: Each agent independently decides its own search strategy based on its persona
-        with st.spinner("Agents are autonomously defining their research strategies..."):
-            agent_queries = {}
-            with ThreadPoolExecutor(max_workers=min(num_agents, 5)) as executor:
-                query_futures = {executor.submit(generate_agent_query, topic, ag): i for i, ag in enumerate(agents_config)}
-                for future in as_completed(query_futures):
-                    agent_queries[query_futures[future]] = future.result()
-
         for r in range(num_rounds):
             render_round_divider(r + 1, num_rounds)
-            
-            # 🔥 SPEED & QUALITY FIX: Pre-fetch tailored RAG and Web Context in parallel
-            with st.spinner(f"Round {r+1} Intelligence Gathering..."):
-                rag_contexts = {}
-                web_contexts = {}
-                with ThreadPoolExecutor(max_workers=min(num_agents * 2, 10)) as executor:
-                    futures_rag = {executor.submit(retrieve_from_pinecone, agent_queries[i]): i for i, ag in enumerate(agents_config)}
-                    futures_web = {executor.submit(serper_search, agent_queries[i], 3): i for i, ag in enumerate(agents_config)} if use_web and r == 0 else {}
-                    
-                    for future in as_completed(futures_rag):
-                        rag_contexts[futures_rag[future]] = future.result()
-                    for future in as_completed(futures_web):
-                        web_contexts[futures_web[future]] = future.result()
-
             for i, ag in enumerate(agents_config):
                 agent_llm = get_llm(ag["model"])
-                with st.spinner(f"{AGENT_NAMES[i]} formulating argument..."):
-                    rag_context = rag_contexts.get(i, "")
-                    web_results = web_contexts.get(i, []) if r == 0 else []
-                    argument = run_agent_turn(i, ag, topic, agent_queries[i], rag_context, web_results, debate_history, r + 1)
-                    agent_research_logs.append({"round": r + 1, "agent": AGENT_NAMES[i], "query": agent_queries[i], "web": web_results, "rag_found": bool(rag_context)})
+                with st.spinner(f"{AGENT_NAMES[i]} researching & formulating..."):
+                    rag_context = retrieve_from_pinecone(topic, agent_llm)
+                    web_results = serper_search(topic, 4) if use_web and r == 0 else []
+                    argument = run_agent_turn(i, ag, topic, topic, rag_context, web_results, debate_history, r + 1)
+                    agent_research_logs.append({"round": r + 1, "agent": AGENT_NAMES[i], "query": topic, "web": web_results, "rag_found": bool(rag_context)})
                     
-                render_argument(AGENT_NAMES[i], ag["model"], argument, AGENT_COLORS[i % len(AGENT_COLORS)], agent_queries[i])
+                render_argument(AGENT_NAMES[i], ag["model"], argument, AGENT_COLORS[i % len(AGENT_COLORS)], topic)
                 debate_history.append(f"{AGENT_NAMES[i]}: {argument}")
                 
                 current_debate["history"] = list(debate_history)

@@ -1,255 +1,51 @@
 <!DOCTYPE html>
-<html lang="en" class="scroll-smooth">
-<head>
+<html lang="en">
+  <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DebateLM - Intelligence, Synthesized</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    fontFamily: { sans: ['Inter', 'sans-serif'] },
-                    colors: {
-                        background: '#000000',
-                        surface: '#0A0A0A',
-                        surfaceBorder: '#1F1F1F',
-                        primary: '#FFFFFF',
-                        muted: '#A1A1AA',
-                        accent: '#3B82F6'
-                    },
-                    backgroundImage: {
-                        'grid-pattern': "linear-gradient(to right, #1F1F1F 1px, transparent 1px), linear-gradient(to bottom, #1F1F1F 1px, transparent 1px)",
-                        'radial-gradient': "radial-gradient(circle at 50% 0%, rgba(59, 130, 246, 0.15), transparent 50%)"
-                    }
-                }
-            }
-        }
-    </script>
+    <!-- This meta tag is strictly required for mobile responsiveness -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    
+    <title>DebateLM</title>
     <style>
-        body { 
-            background-color: theme('colors.background'); 
-            color: theme('colors.primary'); 
-            -webkit-font-smoothing: antialiased; 
-            margin: 0; 
-            padding: 0;
-            overflow-x: hidden;
-        }
-        
-        .bg-grid {
-            background-size: 40px 40px;
-            mask-image: linear-gradient(to bottom, transparent, black 10%, black 70%, transparent);
-            -webkit-mask-image: linear-gradient(to bottom, transparent, black 10%, black 70%, transparent);
-        }
-
-        .hero-title {
-            letter-spacing: -0.04em;
-            background: linear-gradient(180deg, #FFFFFF 0%, #A1A1AA 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        .btn-launch {
-            background: #FFFFFF;
-            color: #000000;
-            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-        }
-
-        .btn-launch:hover {
-            transform: scale(1.02);
-            box-shadow: 0 0 30px rgba(255, 255, 255, 0.2);
-        }
-
-        /* Iframe transitions */
-        #landing-view, #app-view {
-            transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1), transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-        }
-        
-        .hidden-view {
-            opacity: 0;
-            pointer-events: none;
-            transform: scale(0.98);
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-        }
-
-        /* Loading spinner */
-        .loader {
-            border: 3px solid rgba(255,255,255,0.1);
-            border-top: 3px solid #FFF;
-            border-radius: 50%;
-            width: 24px;
-            height: 24px;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+      /* Reset margins and paddings, and ensure the body takes exactly 100% of the screen */
+      html, body { 
+        margin: 0; 
+        padding: 0; 
+        width: 100vw; 
+        height: 100vh; 
+        overflow: hidden; 
+        background-color: #ffffff; /* Optional: prevents flashing before load */
+      }
+      
+      /* Make the iframe take up the entire viewport */
+      iframe { 
+        width: 100%; 
+        height: 100%; 
+        border: none; 
+        display: block; /* Removes default inline spacing underneath iframes */
+      }
     </style>
-</head>
-<body class="w-full min-h-screen relative">
-
-    <!-- LANDING PAGE VIEW -->
-    <div id="landing-view" class="w-full min-h-screen relative z-10">
-        
-        <!-- Background Effects -->
-        <div class="absolute inset-0 bg-radial-gradient pointer-events-none z-0"></div>
-        <div class="absolute inset-0 bg-grid-pattern bg-grid opacity-30 pointer-events-none z-0"></div>
-
-        <!-- Navbar -->
-        <nav class="relative z-20 max-w-7xl mx-auto px-6 h-24 flex items-center justify-between">
-            <div class="flex items-center gap-2">
-                <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"></path></svg>
-                <span class="text-xl font-bold tracking-tight">DebateLM</span>
-            </div>
-            <div class="flex items-center gap-6">
-                <a href="https://github.com/jarar21/DebateLM" target="_blank" class="text-sm font-medium text-muted hover:text-white transition-colors">GitHub</a>
-                <button onclick="launchApp()" class="text-sm font-semibold bg-surface border border-surfaceBorder px-4 py-2 rounded-full hover:bg-white hover:text-black transition-colors">
-                    Open App
-                </button>
-            </div>
-        </nav>
-
-        <!-- Hero Section -->
-        <main class="relative z-20 max-w-5xl mx-auto px-6 pt-32 pb-24 text-center">
-            
-            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-surfaceBorder bg-surface/50 text-xs font-medium text-muted mb-8">
-                <span class="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
-                v2.0 Architecture Live
-            </div>
-
-            <h1 class="text-6xl md:text-8xl font-extrabold hero-title mb-8 leading-tight">
-                Intelligence,<br>Synthesized.
-            </h1>
-            
-            <p class="text-lg md:text-xl text-muted max-w-2xl mx-auto mb-12 leading-relaxed">
-                The open-source alternative to NotebookLM. Upload documents, assign AI personas, and watch autonomous agents debate the findings to uncover the truth.
-            </p>
-
-            <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
-                <button onclick="launchApp()" class="btn-launch px-8 py-4 rounded-full text-lg font-bold flex items-center gap-3 w-full sm:w-auto justify-center">
-                    Start Debating Free
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
-                </button>
-            </div>
-
-            <!-- Features Grid -->
-            <div class="grid md:grid-cols-3 gap-6 mt-32 text-left">
-                <div class="bg-surface border border-surfaceBorder p-8 rounded-2xl hover:border-gray-700 transition-colors">
-                    <div class="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center mb-6 border border-white/10">
-                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
-                    </div>
-                    <h3 class="text-lg font-bold mb-2">Persistent Workspaces</h3>
-                    <p class="text-muted text-sm leading-relaxed">Isolated database contexts. Upload your PDFs once and they stay securely in Pinecone forever.</p>
-                </div>
-                <div class="bg-surface border border-surfaceBorder p-8 rounded-2xl hover:border-gray-700 transition-colors">
-                    <div class="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center mb-6 border border-white/10">
-                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"></path></svg>
-                    </div>
-                    <h3 class="text-lg font-bold mb-2">Autonomous Agents</h3>
-                    <p class="text-muted text-sm leading-relaxed">Agents dynamically write their own search queries based on the unique persona you assign them.</p>
-                </div>
-                <div class="bg-surface border border-surfaceBorder p-8 rounded-2xl hover:border-gray-700 transition-colors">
-                    <div class="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center mb-6 border border-white/10">
-                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                    </div>
-                    <h3 class="text-lg font-bold mb-2">1M Token RAG</h3>
-                    <p class="text-muted text-sm leading-relaxed">Powered by Gemini 1.5. Massive context windows completely eliminate the need for slow LLM reranking.</p>
-                </div>
-            </div>
-            
-            <div class="mt-20 pb-10">
-                <p class="text-xs text-surfaceBorder font-medium">BUILT BY JARAR • DEBATELM v2.0</p>
-            </div>
-        </main>
-    </div>
-
-    <!-- APP VIEW (EMBEDDED STREAMLIT) -->
-    <div id="app-view" class="hidden-view bg-background z-50 flex flex-col h-screen overflow-hidden">
-        
-        <!-- Minimal App Topbar -->
-        <div class="h-14 border-b border-surfaceBorder bg-surface flex items-center justify-between px-6 shrink-0 z-50 relative shadow-md">
-            <div class="flex items-center gap-3">
-                <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"></path></svg>
-                <span class="text-sm font-bold tracking-tight">DebateLM App</span>
-            </div>
-            <button onclick="closeApp()" class="text-xs font-semibold text-muted hover:text-white px-3 py-1.5 rounded bg-white/5 hover:bg-white/10 transition-colors flex items-center gap-2">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
-                Exit App
-            </button>
-        </div>
-
-        <!-- Iframe Container with Loading State -->
-        <div class="relative flex-1 w-full bg-background">
-            <div id="iframe-loader" class="absolute inset-0 flex flex-col items-center justify-center z-10 bg-background text-muted">
-                <div class="loader mb-4"></div>
-                <p class="text-sm font-medium animate-pulse">Connecting to secure workspace...</p>
-            </div>
-            
-            <!-- IMPORTANT: Change src to your actual deployed Streamlit URL. Note the ?embed=true tag -->
-            <iframe 
-                id="streamlit-iframe"
-                src="" 
-                class="absolute inset-0 w-full h-full border-none z-20 opacity-0 transition-opacity duration-1000"
-                allow="clipboard-write; microphone; camera;"
-                onload="iframeLoaded()"
-            ></iframe>
-        </div>
-    </div>
-
-    <!-- UI Logic -->
+  </head>
+  <body>
     <script>
-        // Change this URL to your actual Streamlit deployment URL
-        const STREAMLIT_URL = "https://debatelm.streamlit.app/?embed=true";
-        
-        let isAppLoaded = false;
+      // Generate or retrieve the permanent Guest ID
+      let guestId = localStorage.getItem("debatelm_guest_id");
+      if (!guestId) {
+        guestId = "guest_" + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+        localStorage.setItem("debatelm_guest_id", guestId);
+      }
 
-        function launchApp() {
-            const landing = document.getElementById('landing-view');
-            const app = document.getElementById('app-view');
-            const iframe = document.getElementById('streamlit-iframe');
-
-            // 1. Hide Landing Page
-            landing.classList.add('hidden-view');
-            
-            // 2. Load the iframe source if it hasn't been loaded yet
-            if (!isAppLoaded) {
-                iframe.src = STREAMLIT_URL;
-            }
-
-            // 3. Show App View
-            setTimeout(() => {
-                landing.style.display = 'none';
-                app.classList.remove('hidden-view');
-            }, 500); // Matches CSS transition duration
-        }
-
-        function closeApp() {
-            const landing = document.getElementById('landing-view');
-            const app = document.getElementById('app-view');
-
-            // 1. Hide App View
-            app.classList.add('hidden-view');
-
-            // 2. Show Landing Page
-            setTimeout(() => {
-                landing.style.display = 'block';
-                // Small delay to ensure display:block applies before removing opacity class
-                setTimeout(() => {
-                    landing.classList.remove('hidden-view');
-                }, 50);
-            }, 500);
-        }
-
-        function iframeLoaded() {
-            // Called automatically when the iframe finishes loading the Streamlit HTML
-            if (document.getElementById('streamlit-iframe').src !== window.location.href) {
-                isAppLoaded = true;
-                document.getElementById('iframe-loader').style.display = 'none';
-                document.getElementById('streamlit-iframe').classList.remove('opacity-0');
-            }
-        }
+      // Create your exact iframe and inject the ID into your URL
+      const iframe = document.createElement("iframe");
+      
+      // Kept your exact URL and appended the uid parameter
+      iframe.src = "https://debatelm.streamlit.app//?embedded=true&uid=" + guestId;
+      
+      // Kept your exact attributes
+      iframe.setAttribute("allowfullscreen", "");
+      iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-popups allow-forms");
+      
+      document.body.appendChild(iframe);
     </script>
-</body>
+  </body>
 </html>
