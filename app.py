@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 from pinecone import Pinecone
 from langchain_pinecone import PineconeVectorStore
-
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_community.document_loaders import PyMuPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -32,10 +31,8 @@ AVAILABLE_MODELS = [
 ]
 DEFAULT_MODEL        = AVAILABLE_MODELS[0]
 MAX_DEBATES          = 5
-TOP_K_RETRIEVAL      = 15
-TOP_K_FINAL          = 8
 
-st.set_page_config(page_title="DebateLM", page_icon="⚖", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="DebateLM Workspaces", page_icon="⚖", layout="wide", initial_sidebar_state="expanded")
 
 # --- CUSTOM CSS ---
 st.markdown("""
@@ -64,8 +61,8 @@ footer, .stDeployButton { display: none !important; }
 .quota-label { display:flex; justify-content:space-between; font-family:'Inter', sans-serif; font-size:0.75rem; font-weight: 600; color:var(--text-color); opacity:0.7; margin-bottom:0.5rem; }
 .quota-track { height:4px; background:var(--secondary-background-color); filter: brightness(0.9); border-radius: 2px; overflow: hidden; }
 .quota-fill { height:100%; background:var(--primary-color); }
-.record-meta { display:flex; gap:1rem; align-items:baseline; margin-bottom:0.8rem; padding-bottom:1rem; border-bottom:1px solid var(--secondary-background-color); }
-.record-date { font-family:'Inter', sans-serif; font-size:0.8rem; font-weight: 500; color:var(--text-color); opacity:0.7; }
+.project-card { border:1px solid var(--secondary-background-color); padding:1.5rem; border-radius:8px; background:var(--secondary-background-color); margin-bottom:1rem; transition:0.2s; cursor:pointer; }
+.project-card:hover { border-color:var(--primary-color); transform:translateY(-2px); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -83,7 +80,7 @@ def get_guest_id() -> str:
 
 guest_id = get_guest_id()
 
-# --- 2. SUPABASE (WITH CLOUD CACHE) ---
+# --- 2. SUPABASE DB ---
 @st.cache_resource
 def init_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -92,96 +89,85 @@ supabase = init_supabase()
 
 def is_valid_supabase_guest(gid: str) -> bool:
     if not gid: return False
-    return bool(re.match(r"^guest_[a-z0-9]{20,}$", gid))
+    return bool(re.match(r"^guest_[a-z0-9]{16,}$", gid))
 
-# 🔥 NEW: Merged function to get guest quota AND preferences efficiently
 def get_guest_session_data(gid):
     if not is_valid_supabase_guest(gid): 
         return {"debates_run": 0, "preferences": {}}
     try:
         res = supabase.table("guest_sessions").select("debates_run, preferences").eq("guest_id", gid).execute()
         if res.data:
-            return {
-                "debates_run": res.data[0].get("debates_run", 0),
-                "preferences": res.data[0].get("preferences") or {}
-            }
+            return {"debates_run": res.data[0].get("debates_run", 0), "preferences": res.data[0].get("preferences") or {}}
         else:
             supabase.table("guest_sessions").upsert({"guest_id": gid, "preferences": {}}).execute()
             return {"debates_run": 0, "preferences": {}}
     except Exception:
         return {"debates_run": 0, "preferences": {}}
 
-# 🔥 NEW: Save preferences instantly to cloud
 def save_preferences(gid, prefs_dict):
     if is_valid_supabase_guest(gid):
-        try:
-            supabase.table("guest_sessions").update({"preferences": prefs_dict}).eq("guest_id", gid).execute()
-        except Exception:
-            pass
+        try: supabase.table("guest_sessions").update({"preferences": prefs_dict}).eq("guest_id", gid).execute()
+        except Exception: pass
 
 def increment_quota(gid):
     if is_valid_supabase_guest(gid):
         try:
             current = get_guest_session_data(gid)["debates_run"]
             supabase.table("guest_sessions").update({"debates_run": current + 1, "last_active": "now()"}).eq("guest_id", gid).execute()
-        except Exception:
-            pass
+        except Exception: pass
 
-def load_past_debates(gid):
+def load_projects(gid):
     if not is_valid_supabase_guest(gid): return []
     try:
         res = supabase.table("debates").select("*").eq("guest_id", gid).order("created_at", desc=True).execute()
-        debates = []
+        projects = []
         for row in res.data:
-            d = row["history"]
-            d["id"] = row["debate_id"]
-            d["verdict"] = row.get("verdict", d.get("verdict", "")) 
-            debates.append(d)
-        return debates
-    except Exception:
-        return []
+            p = row["history"]
+            p["id"] = row["debate_id"]
+            p["topic"] = row.get("topic", p.get("topic", "Untitled Workspace"))
+            p["verdict"] = row.get("verdict", p.get("verdict", ""))
+            p.setdefault("files", [])
+            p.setdefault("agents_config", [])
+            projects.append(p)
+        return projects
+    except Exception: return []
 
-# 🔥 FIX: Removed the duplicate increment_quota call
-def save_new_debate(topic, history, verdict, research_logs, judge_model, gid):
-    debate_id = str(uuid.uuid4())
+def create_project(gid):
+    project_id = str(uuid.uuid4())
     record = {
-        "id": debate_id, "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "topic": topic, "research_logs": research_logs, "history": history, 
-        "verdict": verdict, "post_chat": [], "judge_model": judge_model
+        "id": project_id, "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "topic": "Untitled Workspace", "files": [], "history": [], "research_logs": [], 
+        "post_chat": [], "agents_config": []
     }
     if is_valid_supabase_guest(gid):
         try:
             supabase.table("debates").insert({
-                "debate_id": debate_id, "guest_id": gid, "topic": topic,
-                "verdict": verdict, "history": record
+                "debate_id": project_id, "guest_id": gid, "topic": "Untitled Workspace", "history": record
             }).execute()
-            increment_quota(gid) # ✅ Only called ONCE here
-        except Exception as e: 
-            print("DB Error:", e)
-            
-    st.session_state.past_debates.insert(0, record)
+            increment_quota(gid)
+        except Exception as e: print("DB Error:", e)
     return record
 
-def update_debate_chat(debate_id, record):
+def update_project(project_id, record):
     if is_valid_supabase_guest(guest_id):
-        try:
-            supabase.table("debates").update({"history": record, "verdict": record.get("verdict", "")}).eq("debate_id", debate_id).execute()
+        try: supabase.table("debates").update({"history": record, "topic": record.get("topic", ""), "verdict": record.get("verdict", "")}).eq("debate_id", project_id).execute()
+        except Exception: pass
+
+def delete_project(project_id):
+    if is_valid_supabase_guest(guest_id):
+        try: supabase.table("debates").delete().eq("debate_id", project_id).execute()
         except Exception: pass
 
 # --- INITIALIZE STATE ---
 guest_data = get_guest_session_data(guest_id)
-if "user_prefs" not in st.session_state:
-    st.session_state.user_prefs = guest_data["preferences"]
+if "user_prefs" not in st.session_state: st.session_state.user_prefs = guest_data["preferences"]
 debates_used = guest_data["debates_run"]
 
-if "past_debates" not in st.session_state: st.session_state.past_debates = load_past_debates(guest_id)
-if "current_view" not in st.session_state: st.session_state.current_view = "new"
-if "selected_history" not in st.session_state: st.session_state.selected_history = None
-if "uploaded_file_names" not in st.session_state: st.session_state.uploaded_file_names = []
+if "projects" not in st.session_state: st.session_state.projects = load_projects(guest_id)
+if "current_view" not in st.session_state: st.session_state.current_view = "dashboard"
+if "current_project_id" not in st.session_state: st.session_state.current_project_id = None
 
-# Helper to safely load selected model indexes from Cache
-def get_model_idx(model_name):
-    return AVAILABLE_MODELS.index(model_name) if model_name in AVAILABLE_MODELS else 0
+def get_model_idx(model_name): return AVAILABLE_MODELS.index(model_name) if model_name in AVAILABLE_MODELS else 0
 
 # --- 3. PINECONE INTEGRATION ---
 @st.cache_resource
@@ -192,7 +178,7 @@ def get_vectorstore():
     emb = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001", google_api_key=GEMINI_API_KEY, output_dimensionality=768)
     return PineconeVectorStore(index_name=PINECONE_INDEX_NAME, embedding=emb, pinecone_api_key=PINECONE_API_KEY)
 
-def process_documents(uploaded_files):
+def process_documents(uploaded_files, project_id):
     if not uploaded_files: return 0
     p_split = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=400)
     c_split = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=150)
@@ -203,24 +189,25 @@ def process_documents(uploaded_files):
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
             tmp_file.write(uf.getbuffer())
             tmp_path = tmp_file.name
-        
         try:
             file_docs = PyMuPDFLoader(tmp_path).load() if suffix == ".pdf" else TextLoader(tmp_path).load()
             for d in file_docs:
                 d.metadata["file_name"] = uf.name
-                # 🔥 OVERRIDE the temporary file path with the real file name
                 d.metadata["source"] = uf.name
             raw_docs.extend(file_docs)
         finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+            if os.path.exists(tmp_path): os.remove(tmp_path)
             
     parent_docs = p_split.split_documents(raw_docs)
     child_docs = []
     for parent in parent_docs:
         children = c_split.split_documents([parent])
         for child in children:
-            child.metadata.update({"guest_id": guest_id, "file_name": parent.metadata.get("file_name", "unknown"), "parent_text": parent.page_content, "source": parent.metadata.get("source", "unknown")})
+            child.metadata.update({
+                "guest_id": guest_id, "project_id": project_id, 
+                "file_name": parent.metadata.get("file_name", "unknown"), 
+                "parent_text": parent.page_content, "source": parent.metadata.get("source", "unknown")
+            })
             if "page" in child.metadata: del child.metadata["page"]
         child_docs.extend(children)
         
@@ -236,21 +223,33 @@ def process_documents(uploaded_files):
     for i in range(0, total_chunks, BATCH_SIZE):
         batch = child_docs[i : i + BATCH_SIZE]
         progress_bar.progress(0.2 + (0.8 * ((i // BATCH_SIZE + 1) / total_batches)), text=f"Uploading batch {(i // BATCH_SIZE) + 1} of {total_batches}...")
-        try:
-            vs.add_documents(batch)
+        try: vs.add_documents(batch)
         except Exception:
-            progress_bar.progress(0.2 + (0.8 * ((i // BATCH_SIZE + 1) / total_batches)), text=f"⚠️ Network hiccup. Retrying batch {(i // BATCH_SIZE) + 1} in 2s...")
+            progress_bar.progress(0.2 + (0.8 * ((i // BATCH_SIZE + 1) / total_batches)), text=f"⚠️ Network hiccup. Retrying...")
             time.sleep(2)
             vs.add_documents(batch)
             
     progress_bar.empty()
     return total_chunks
 
-def delete_documents(file_names):
+def delete_documents(file_names, project_id):
     index = pc.Index(PINECONE_INDEX_NAME)
     for fname in file_names:
-        try: index.delete(filter={"file_name": {"$eq": fname}, "guest_id": {"$eq": guest_id}})
+        try: index.delete(filter={"file_name": {"$eq": fname}, "guest_id": {"$eq": guest_id}, "project_id": {"$eq": project_id}})
         except Exception: pass
+
+def retrieve_from_pinecone(query, project_id):
+    try:
+        # 1M Context Window: Trusting Gemini with top 20 chunks directly
+        results = get_vectorstore().similarity_search(query, k=20, filter={"guest_id": guest_id, "project_id": project_id})
+        parents, context_blocks = set(), []
+        for doc in results:
+            pt = doc.metadata.get("parent_text", doc.page_content)
+            if pt not in parents:
+                parents.add(pt)
+                context_blocks.append(f"[Source: {doc.metadata.get('source','?')}]\n{pt}")
+        return "\n\n---\n\n".join(context_blocks)
+    except Exception: return ""
 
 # --- CORE LLM LOGIC ---
 def parse_response(response):
@@ -267,22 +266,7 @@ def generate_agent_query(topic, agent_config):
         raw = parse_response(agent_llm.invoke([SystemMessage(content="You are an expert researcher defining your own strategy."), HumanMessage(content=prompt)])).strip().replace('"', '')
         return raw if raw else topic
     except Exception as e:
-        print(f"Query Gen Error for agent {agent_config.get('id', 'unknown')}:", e)
         return topic
-
-def retrieve_from_pinecone(query):
-    try:
-        # We trust Gemini's 1M-token context window to find the needle in the haystack.
-        # Bypass the slow, expensive LLM reranking and just pull the top 20 raw chunks.
-        results = get_vectorstore().similarity_search(query, k=20, filter={"guest_id": guest_id})
-        parents, context_blocks = set(), []
-        for doc in results:
-            pt = doc.metadata.get("parent_text", doc.page_content)
-            if pt not in parents:
-                parents.add(pt)
-                context_blocks.append(f"[Source: {doc.metadata.get('source','?')}]\n{pt}")
-        return "\n\n---\n\n".join(context_blocks)
-    except Exception: return ""
 
 def serper_search(query, num_results=4):
     if not SERPER_API_KEY: return[]
@@ -332,208 +316,224 @@ def render_verdict(text, model_name):
 def render_round_divider(r, total):
     st.markdown(f'<div class="round-divider"><div class="round-divider-line"></div><div class="round-divider-label">Round {r} of {total}</div><div class="round-divider-line"></div></div>', unsafe_allow_html=True)
 
-# --- SIDEBAR & QUOTA UI ---
-prefs = st.session_state.user_prefs 
+# ==========================================
+# MAIN ROUTER
+# ==========================================
 
-with st.sidebar:
-    st.markdown('<div class="sb-logo">⚖ DebateLM</div><div class="sb-logo-sub">The Open-Source NotebookLM Alternative</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sb-section">', unsafe_allow_html=True)
-    st.button("+ New Debate", type="primary", use_container_width=True, on_click=lambda: st.session_state.update(current_view="new"))
-    st.markdown('</div>', unsafe_allow_html=True)
+if st.session_state.current_view == "dashboard":
+    with st.sidebar:
+        st.markdown('<div class="sb-logo">⚖ DebateLM</div><div class="sb-logo-sub">Workspaces</div>', unsafe_allow_html=True)
+        pct = int(min(debates_used / MAX_DEBATES, 1.0) * 100)
+        st.markdown(f'<div class="quota-row"><div class="quota-label"><span>Free Demo Quota</span><span>{debates_used}/{MAX_DEBATES}</span></div><div class="quota-track"><div class="quota-fill" style="width:{pct}%; background:{"#E11D48" if debates_used >= MAX_DEBATES else "var(--primary-color)"}"></div></div></div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="sb-section"><div class="sb-label">Configuration</div>', unsafe_allow_html=True)
-    # 🔥 Bind values to cached preferences
-    num_agents  = st.slider("Debaters", 2, 5, prefs.get("num_agents", 2))
-    num_rounds  = st.slider("Rounds", 1, 5, prefs.get("num_rounds", 2))
-    judge_model = st.selectbox("Judge Model", AVAILABLE_MODELS, index=get_model_idx(prefs.get("judge_model", DEFAULT_MODEL)))
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="sb-section"><div class="sb-label">Knowledge Base</div>', unsafe_allow_html=True)
+    st.markdown('<div class="masthead"><div><div class="masthead-wordmark">DebateLM Workspaces</div><div class="masthead-tagline">Your persistent intelligence projects</div></div></div>', unsafe_allow_html=True)
     
-    # 🔥 INDUSTRY-GRADE STATE: Fetch persistent file list from Supabase Cloud
-    saved_files = prefs.get("saved_files", [])
-    if saved_files:
-        st.markdown('<div style="font-size:0.75rem; font-weight:600; margin-bottom:0.5rem; opacity:0.8;">Active Project Files:</div>', unsafe_allow_html=True)
-        for fname in saved_files:
-            c1, c2 = st.columns([0.85, 0.15])
-            c1.markdown(f"<div style='font-size:0.8rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;'>📄 {fname}</div>", unsafe_allow_html=True)
-            if c2.button("🗑️", key=f"del_{fname}", help=f"Remove {fname}"):
-                delete_documents([fname])
-                saved_files.remove(fname)
-                prefs["saved_files"] = saved_files
-                save_preferences(guest_id, prefs)
-                st.rerun()
-                
-    st.markdown("<br>", unsafe_allow_html=True)
-    new_files = st.file_uploader("Add to Knowledge Base", type=["pdf","txt"], accept_multiple_files=True)
+    c1, c2 = st.columns([0.8, 0.2])
+    c1.markdown('<div class="section-hd"><div class="section-hd-num" style="min-width:0;"></div><div class="section-hd-title">ACTIVE PROJECTS</div></div>', unsafe_allow_html=True)
     
-    if new_files:
-        files_to_process = [f for f in new_files if f.name not in saved_files]
-        if files_to_process:
-            process_documents(files_to_process)
-            saved_files.extend([f.name for f in files_to_process])
-            prefs["saved_files"] = saved_files
-            save_preferences(guest_id, prefs)
-            st.toast(f"✅ Synced {len(files_to_process)} file(s) to Cloud!")
-            st.rerun()
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    pct = int(min(debates_used / MAX_DEBATES, 1.0) * 100)
-    st.markdown(f'<div class="quota-row"><div class="quota-label"><span>Free Demo Quota</span><span>{debates_used}/{MAX_DEBATES}</span></div><div class="quota-track"><div class="quota-fill" style="width:{pct}%; background:{"#E11D48" if debates_used >= MAX_DEBATES else "var(--primary-color)"}"></div></div></div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="sb-section"><div class="sb-label">History (Cloud Saved)</div>', unsafe_allow_html=True)
-    if not st.session_state.past_debates: st.markdown('<div style="font-size:0.75rem; opacity:0.7;">No debates recorded.</div>', unsafe_allow_html=True)
-    for rec in st.session_state.past_debates:
-        if st.button(rec["topic"][:34] + "…" if len(rec["topic"])>34 else rec["topic"], key=f"h_{rec['id']}", use_container_width=True):
-            st.session_state.current_view = "history"; st.session_state.selected_history = dict(rec); st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# --- MAIN APP UI ---
-st.markdown('<div class="masthead"><div><div class="masthead-wordmark">DebateLM</div><div class="masthead-tagline">Cloud-Native Intelligence Debate · Isolated Guest Pass</div></div></div>', unsafe_allow_html=True)
-
-if st.session_state.current_view == "new":
-    can_debate = debates_used < MAX_DEBATES and bool(GEMINI_API_KEY)
-
-    st.markdown('<div class="section-hd"><div class="section-hd-num">01</div><div><div class="section-hd-title">CONFIGURE DEBATERS</div></div></div>', unsafe_allow_html=True)
-    agents_config = []
-    saved_agents = prefs.get("agents", []) 
-    
-    cols = st.columns(min(num_agents, 3), gap="small")
-    for i in range(num_agents):
-        # 🔥 Safely extract saved agent state or use empty dictionary fallback
-        sa = saved_agents[i] if i < len(saved_agents) else {}
-        
-        with cols[i % min(num_agents, 3)]:
-            st.markdown(f'<div class="agent-card" style="border-left:4px solid {AGENT_COLORS[i]}"><div class="agent-id" style="color:{AGENT_COLORS[i]}">{AGENT_NAMES[i]}</div></div>', unsafe_allow_html=True)
-            model_sel = st.selectbox("Model", AVAILABLE_MODELS, key=f"model_{i}", index=get_model_idx(sa.get("model", DEFAULT_MODEL)), label_visibility="collapsed")
-            instr = st.text_area("Persona", value=sa.get("instruction", ""), key=f"inst_{i}", height=72, label_visibility="collapsed", placeholder="Define bias...")
-            agents_config.append({"id": i, "instruction": instr if instr else "Be highly analytical and critical.", "model": model_sel})
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<div class="section-hd"><div class="section-hd-num">02</div><div><div class="section-hd-title">THE MOTION</div></div></div>', unsafe_allow_html=True)
-    
-    # 🔥 Bind value to cached topic
-    topic = st.text_area("Motion", value=prefs.get("topic", ""), placeholder="State the motion to be debated...", height=100, label_visibility="collapsed")
-    use_web = st.toggle("Enable live web search grounding via Serper", value=prefs.get("use_web", bool(SERPER_API_KEY)), disabled=not SERPER_API_KEY)
-    
-    if debates_used >= MAX_DEBATES: st.error(f"🛑 You have reached the {MAX_DEBATES} debate limit.")
-        
-    button_placeholder = st.empty()
-    launch = button_placeholder.button("Launch Debate", type="primary", disabled=not can_debate, use_container_width=True)
-
-    if launch and topic.strip():
-        # 🔥 INSTANT CACHE: Save user config immediately to the Database
-        new_prefs = {
-            "num_agents": num_agents, "num_rounds": num_rounds, "judge_model": judge_model,
-            "topic": topic, "use_web": use_web, "agents": agents_config
-        }
-        st.session_state.user_prefs = new_prefs
-        save_preferences(guest_id, new_prefs)
-        
-        button_placeholder.button("🛑 Stop Ongoing Debate (Saves Progress)", type="primary", use_container_width=True, key="stop_btn")
-
-        debate_history, agent_research_logs = [],[]
-        current_debate = save_new_debate(topic, debate_history, "⚠️ *Debate interrupted. No synthesis.*", agent_research_logs, judge_model, guest_id)
-
-        # 🔥 AUTONOMOUS RESEARCH: Each agent independently decides its own search strategy based on its persona
-        with st.spinner("Agents are autonomously defining their research strategies..."):
-            agent_queries = {}
-            with ThreadPoolExecutor(max_workers=min(num_agents, 5)) as executor:
-                query_futures = {executor.submit(generate_agent_query, topic, ag): i for i, ag in enumerate(agents_config)}
-                for future in as_completed(query_futures):
-                    agent_queries[query_futures[future]] = future.result()
-
-        for r in range(num_rounds):
-            render_round_divider(r + 1, num_rounds)
-            
-            # 🔥 SPEED & QUALITY FIX: Pre-fetch tailored RAG and Web Context in parallel
-            with st.spinner(f"Round {r+1} Intelligence Gathering..."):
-                rag_contexts = {}
-                web_contexts = {}
-                with ThreadPoolExecutor(max_workers=min(num_agents * 2, 10)) as executor:
-                    futures_rag = {executor.submit(retrieve_from_pinecone, agent_queries[i]): i for i, ag in enumerate(agents_config)}
-                    futures_web = {executor.submit(serper_search, agent_queries[i], 3): i for i, ag in enumerate(agents_config)} if use_web and r == 0 else {}
-                    
-                    for future in as_completed(futures_rag):
-                        rag_contexts[futures_rag[future]] = future.result()
-                    for future in as_completed(futures_web):
-                        web_contexts[futures_web[future]] = future.result()
-
-            for i, ag in enumerate(agents_config):
-                agent_llm = get_llm(ag["model"])
-                with st.spinner(f"{AGENT_NAMES[i]} formulating argument..."):
-                    rag_context = rag_contexts.get(i, "")
-                    web_results = web_contexts.get(i, []) if r == 0 else []
-                    argument = run_agent_turn(i, ag, topic, agent_queries[i], rag_context, web_results, debate_history, r + 1)
-                    agent_research_logs.append({"round": r + 1, "agent": AGENT_NAMES[i], "query": agent_queries[i], "web": web_results, "rag_found": bool(rag_context)})
-                    
-                render_argument(AGENT_NAMES[i], ag["model"], argument, AGENT_COLORS[i % len(AGENT_COLORS)], agent_queries[i])
-                debate_history.append(f"{AGENT_NAMES[i]}: {argument}")
-                
-                current_debate["history"] = list(debate_history)
-                current_debate["research_logs"] = list(agent_research_logs)
-                st.session_state.past_debates[0] = dict(current_debate)
-                update_debate_chat(current_debate["id"], current_debate)
-
-        # --- DELIBERATION PHASE (FIXED STATE ARCHITECTURE) ---
-        st.markdown('<div class="round-divider"><div class="round-divider-line"></div><div class="round-divider-label">Deliberation</div><div class="round-divider-line"></div></div>', unsafe_allow_html=True)
-        with st.spinner(f"Final Synthesizer ({judge_model}) deliberating..."):
-            final_verdict_text = run_judge(topic, debate_history, judge_model)
-            
-        render_verdict(final_verdict_text, judge_model)
-
-        current_debate["verdict"] = final_verdict_text
-        current_debate["history"] = debate_history
-        current_debate["research_logs"] = agent_research_logs
-        
-        update_debate_chat(current_debate["id"], current_debate)
-        st.session_state.past_debates[0] = current_debate
-        st.session_state.selected_history = current_debate
-        st.session_state.current_view = "history"
+    if c2.button("➕ New Workspace", type="primary", use_container_width=True, disabled=debates_used >= MAX_DEBATES):
+        new_proj = create_project(guest_id)
+        st.session_state.projects.insert(0, new_proj)
+        st.session_state.current_project_id = new_proj["id"]
+        st.session_state.current_view = "workspace"
         st.rerun()
 
-elif st.session_state.current_view == "history":
-    past = st.session_state.selected_history
-    if st.button("← Return to Setup"):
-        st.session_state.current_view = "new"; st.rerun()
-
-    st.markdown(f'<div class="record-meta"><div class="record-date">{past["date"]}</div></div>', unsafe_allow_html=True)
-    st.markdown(f"### Motion:\n{past['topic']}")
     st.markdown("<br>", unsafe_allow_html=True)
-    
-    tab1, tab2, tab3 = st.tabs(["Transcript", "Research Logs", "Follow-up"])
 
-    with tab1:
-        for msg in past.get("history", []):
-            if ": " in msg:
-                speaker, text = msg.split(": ", 1)
-                idx = {"I":0, "II":1, "III":2, "IV":3, "V":4}.get(re.search(r"(V?I{0,3}|I{1,3}V?)$", speaker.strip()).group(), 0) if re.search(r"(V?I{0,3}|I{1,3}V?)$", speaker.strip()) else 0
-                render_argument(speaker, "", text, AGENT_COLORS[idx % len(AGENT_COLORS)])
-        render_verdict(past.get("verdict", ""), past.get("judge_model",""))
-
-    with tab2:
-        for log in past.get("research_logs",[]):
-            st.markdown(f"**{log['agent']}** (Round {log['round']})")
-            if log.get("rag_found"): st.markdown("- 📄 *Retrieved data from Pinecone Knowledge Base*")
-            for w in log.get("web",[]): st.markdown(f"- 🌐 [{w['title']}]({w['link']})")
-            st.divider()
-
-    with tab3:
-        for cm in past.get("post_chat", []):
-            with st.chat_message(cm["role"]): 
-                st.markdown(format_professional_citations(cm["content"]), unsafe_allow_html=True)
+    if not st.session_state.projects:
+        st.info("No workspaces yet. Create one to upload documents and launch a debate!")
+    else:
+        cols = st.columns(3, gap="medium")
+        for i, p in enumerate(st.session_state.projects):
+            with cols[i % 3]:
+                st.markdown(f"""
+                <div class="project-card">
+                    <h4 style="margin:0 0 0.5rem 0; color:var(--text-color);">{p.get("topic", "Untitled Workspace")}</h4>
+                    <div style="font-size:0.8rem; opacity:0.7; margin-bottom:1rem;">📁 {len(p.get("files",[]))} Files • {len(p.get("history",[]))//2} Rounds</div>
+                </div>
+                """, unsafe_allow_html=True)
                 
-        if q := st.chat_input("Ask a follow-up question…"):
-            past.setdefault("post_chat",[]).append({"role": "user", "content": q})
-            with st.chat_message("user"): st.markdown(q)
-            with st.chat_message("assistant"):
-                with st.spinner("Deliberating…"):
-                    msgs =[SystemMessage(content=f"Synthesizer. Debate: '{past['topic']}'. VERDICT: {past.get('verdict','')}. Cite sources if needed.")]
-                    for cm in past["post_chat"]: msgs.append(HumanMessage(content=cm["content"]) if cm["role"]=="user" else AIMessage(content=cm["content"]))
-                    ans = parse_response(get_llm(past.get("judge_model", DEFAULT_MODEL)).invoke(msgs))
-                    st.markdown(format_professional_citations(ans), unsafe_allow_html=True)
+                c_open, c_del = st.columns([0.75, 0.25])
+                if c_open.button("Open", key=f"open_{p['id']}", use_container_width=True):
+                    st.session_state.current_project_id = p["id"]
+                    st.session_state.current_view = "workspace"
+                    st.rerun()
+                if c_del.button("🗑️", key=f"del_{p['id']}", help="Delete Workspace"):
+                    delete_project(p["id"])
+                    try: pc.Index(PINECONE_INDEX_NAME).delete(filter={"project_id": {"$eq": p["id"]}, "guest_id": {"$eq": guest_id}})
+                    except: pass
+                    st.session_state.projects = [x for x in st.session_state.projects if x["id"] != p["id"]]
+                    st.rerun()
+
+
+elif st.session_state.current_view == "workspace":
+    proj = next((x for x in st.session_state.projects if x["id"] == st.session_state.current_project_id), None)
+    if not proj:
+        st.session_state.current_view = "dashboard"
+        st.rerun()
+
+    prefs = st.session_state.user_prefs 
+
+    with st.sidebar:
+        if st.button("← Back to Dashboard", use_container_width=True):
+            st.session_state.current_view = "dashboard"
+            st.rerun()
+            
+        st.divider()
+        st.markdown('<div class="sb-label">📁 PROJECT KNOWLEDGE BASE</div>', unsafe_allow_html=True)
+        
+        saved_files = proj.get("files", [])
+        if saved_files:
+            for fname in saved_files:
+                c1, c2 = st.columns([0.85, 0.15])
+                c1.markdown(f"<div style='font-size:0.8rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;'>📄 {fname}</div>", unsafe_allow_html=True)
+                if c2.button("🗑️", key=f"del_f_{fname}_{proj['id']}", help=f"Delete {fname}"):
+                    delete_documents([fname], proj["id"])
+                    proj["files"].remove(fname)
+                    update_project(proj["id"], proj)
+                    st.rerun()
                     
-            past["post_chat"].append({"role": "assistant", "content": ans})
-            st.session_state.selected_history = dict(past)
-            update_debate_chat(past["id"], past)
+        st.markdown("<br>", unsafe_allow_html=True)
+        new_files = st.file_uploader("Upload Sources", type=["pdf","txt"], accept_multiple_files=True, key=f"up_{proj['id']}")
+        if new_files:
+            files_to_process = [f for f in new_files if f.name not in saved_files]
+            if files_to_process:
+                process_documents(files_to_process, proj["id"])
+                proj.setdefault("files", []).extend([f.name for f in files_to_process])
+                update_project(proj["id"], proj)
+                st.toast(f"✅ Synced {len(files_to_process)} file(s) to this Workspace!")
+                st.rerun()
+                
+    # --- WORKSPACE MAIN AREA ---
+    # Title / Motion Editing
+    new_title = st.text_input("Workspace Name / Motion", value=proj.get("topic", "Untitled Workspace"), placeholder="Define the topic or motion here...")
+    if new_title != proj.get("topic"):
+        proj["topic"] = new_title
+        update_project(proj["id"], proj)
+
+    if not proj.get("history"):
+        # Setup view for empty workspace
+        st.markdown('<div class="section-hd"><div class="section-hd-num">01</div><div><div class="section-hd-title">CONFIGURE DEBATERS</div></div></div>', unsafe_allow_html=True)
+        
+        c_conf1, c_conf2, c_conf3 = st.columns(3)
+        num_agents  = c_conf1.slider("Debaters", 2, 5, prefs.get("num_agents", 2))
+        num_rounds  = c_conf2.slider("Rounds", 1, 5, prefs.get("num_rounds", 2))
+        judge_model = c_conf3.selectbox("Judge Model", AVAILABLE_MODELS, index=get_model_idx(prefs.get("judge_model", DEFAULT_MODEL)))
+        
+        agents_config = []
+        saved_agents = proj.get("agents_config", []) if proj.get("agents_config") else prefs.get("agents", [])
+        
+        cols = st.columns(min(num_agents, 3), gap="small")
+        for i in range(num_agents):
+            sa = saved_agents[i] if i < len(saved_agents) else {}
+            with cols[i % min(num_agents, 3)]:
+                st.markdown(f'<div class="agent-card" style="border-left:4px solid {AGENT_COLORS[i]}"><div class="agent-id" style="color:{AGENT_COLORS[i]}">{AGENT_NAMES[i]}</div></div>', unsafe_allow_html=True)
+                model_sel = st.selectbox("Model", AVAILABLE_MODELS, key=f"model_{i}", index=get_model_idx(sa.get("model", DEFAULT_MODEL)), label_visibility="collapsed")
+                instr = st.text_area("Persona", value=sa.get("instruction", ""), key=f"inst_{i}", height=72, label_visibility="collapsed", placeholder="Define bias...")
+                agents_config.append({"id": i, "instruction": instr if instr else "Be highly analytical and critical.", "model": model_sel})
+
+        use_web = st.toggle("Enable live web search grounding via Serper", value=prefs.get("use_web", bool(SERPER_API_KEY)), disabled=not SERPER_API_KEY)
+        
+        button_placeholder = st.empty()
+        launch = button_placeholder.button("Launch Debate", type="primary", disabled=not bool(GEMINI_API_KEY), use_container_width=True)
+
+        if launch and new_title.strip() and new_title != "Untitled Workspace":
+            # Save preferences and start debate
+            prefs.update({"num_agents": num_agents, "num_rounds": num_rounds, "judge_model": judge_model, "use_web": use_web, "agents": agents_config})
+            save_preferences(guest_id, prefs)
+            st.session_state.user_prefs = prefs
+
+            proj["agents_config"] = agents_config
+            debate_history, agent_research_logs = [], []
+            
+            button_placeholder.button("🛑 Stop Ongoing Debate (Saves Progress)", type="primary", use_container_width=True, key="stop_btn")
+
+            # 🔥 AUTONOMOUS RESEARCH (Performance upgrade)
+            with st.spinner("Agents are autonomously defining their research strategies..."):
+                agent_queries = {}
+                with ThreadPoolExecutor(max_workers=min(num_agents, 5)) as executor:
+                    query_futures = {executor.submit(generate_agent_query, new_title, ag): i for i, ag in enumerate(agents_config)}
+                    for future in as_completed(query_futures):
+                        agent_queries[query_futures[future]] = future.result()
+
+            for r in range(num_rounds):
+                render_round_divider(r + 1, num_rounds)
+                
+                # 🔥 PRE-FETCH RAG AND WEB IN PARALLEL (Performance upgrade)
+                with st.spinner(f"Round {r+1} Intelligence Gathering..."):
+                    rag_contexts, web_contexts = {}, {}
+                    with ThreadPoolExecutor(max_workers=min(num_agents * 2, 10)) as executor:
+                        # RAG uses explicit project_id isolation
+                        futures_rag = {executor.submit(retrieve_from_pinecone, agent_queries[i], proj["id"]): i for i, ag in enumerate(agents_config)}
+                        futures_web = {executor.submit(serper_search, agent_queries[i], 3): i for i, ag in enumerate(agents_config)} if use_web and r == 0 else {}
+                        
+                        for future in as_completed(futures_rag): rag_contexts[futures_rag[future]] = future.result()
+                        for future in as_completed(futures_web): web_contexts[futures_web[future]] = future.result()
+
+                for i, ag in enumerate(agents_config):
+                    with st.spinner(f"{AGENT_NAMES[i]} formulating argument..."):
+                        rag_context = rag_contexts.get(i, "")
+                        web_results = web_contexts.get(i, []) if r == 0 else []
+                        argument = run_agent_turn(i, ag, new_title, agent_queries[i], rag_context, web_results, debate_history, r + 1)
+                        agent_research_logs.append({"round": r + 1, "agent": AGENT_NAMES[i], "query": agent_queries[i], "web": web_results, "rag_found": bool(rag_context)})
+                        
+                    render_argument(AGENT_NAMES[i], ag["model"], argument, AGENT_COLORS[i % len(AGENT_COLORS)], agent_queries[i])
+                    debate_history.append(f"{AGENT_NAMES[i]}: {argument}")
+                    
+                    proj["history"] = list(debate_history)
+                    proj["research_logs"] = list(agent_research_logs)
+                    proj["verdict"] = "⚠️ *Debate interrupted. No synthesis.*"
+                    update_project(proj["id"], proj)
+
+            # --- DELIBERATION ---
+            st.markdown('<div class="round-divider"><div class="round-divider-line"></div><div class="round-divider-label">Deliberation</div><div class="round-divider-line"></div></div>', unsafe_allow_html=True)
+            with st.spinner(f"Final Synthesizer ({judge_model}) deliberating..."):
+                final_verdict_text = run_judge(new_title, debate_history, judge_model)
+                
+            render_verdict(final_verdict_text, judge_model)
+
+            proj["verdict"] = final_verdict_text
+            proj["history"] = debate_history
+            proj["research_logs"] = agent_research_logs
+            proj["judge_model"] = judge_model
+            
+            update_project(proj["id"], proj)
+            st.rerun()
+
+    else:
+        # History View for Workspace
+        tab1, tab2, tab3 = st.tabs(["Transcript", "Research Logs", "Follow-up"])
+        
+        with tab1:
+            for msg in proj.get("history", []):
+                if ": " in msg:
+                    speaker, text = msg.split(": ", 1)
+                    idx = {"I":0, "II":1, "III":2, "IV":3, "V":4}.get(re.search(r"(V?I{0,3}|I{1,3}V?)$", speaker.strip()).group(), 0) if re.search(r"(V?I{0,3}|I{1,3}V?)$", speaker.strip()) else 0
+                    render_argument(speaker, "", text, AGENT_COLORS[idx % len(AGENT_COLORS)])
+            render_verdict(proj.get("verdict", ""), proj.get("judge_model", DEFAULT_MODEL))
+
+        with tab2:
+            for log in proj.get("research_logs",[]):
+                st.markdown(f"**{log['agent']}** (Round {log['round']})")
+                if log.get("rag_found"): st.markdown("- 📄 *Retrieved data from Pinecone Knowledge Base*")
+                for w in log.get("web",[]): st.markdown(f"- 🌐 [{w['title']}]({w['link']})")
+                st.divider()
+
+        with tab3:
+            for cm in proj.get("post_chat", []):
+                with st.chat_message(cm["role"]): 
+                    st.markdown(format_professional_citations(cm["content"]), unsafe_allow_html=True)
+                    
+            if q := st.chat_input("Ask a follow-up question…"):
+                proj.setdefault("post_chat",[]).append({"role": "user", "content": q})
+                with st.chat_message("user"): st.markdown(q)
+                with st.chat_message("assistant"):
+                    with st.spinner("Deliberating…"):
+                        msgs =[SystemMessage(content=f"Synthesizer. Workspace: '{proj.get('topic','')}'. VERDICT: {proj.get('verdict','')}. Cite sources if needed.")]
+                        for cm in proj["post_chat"]: msgs.append(HumanMessage(content=cm["content"]) if cm["role"]=="user" else AIMessage(content=cm["content"]))
+                        ans = parse_response(get_llm(proj.get("judge_model", DEFAULT_MODEL)).invoke(msgs))
+                        st.markdown(format_professional_citations(ans), unsafe_allow_html=True)
+                        
+                proj["post_chat"].append({"role": "assistant", "content": ans})
+                update_project(proj["id"], proj)
+                st.rerun()
